@@ -10,6 +10,10 @@ on:
         default: "run"
         type: choice
         options: [run, tick, replay]
+      hours:
+        description: "Длительность run (ч), для проверки эстафеты можно 0.05"
+        default: "5.6"
+        type: string
 
 permissions:
   actions: write   # чтобы задача могла запустить следующую себя
@@ -38,7 +42,7 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           PYTHONPATH: src
           PYTHONUNBUFFERED: "1"
-          RUN_MAX_HOURS: "5.6"
+          RUN_MAX_HOURS: ${{ github.event.inputs.hours || '5.6' }}
         run: python -m marketpulse.cli ${{ github.event.inputs.step || 'run' }}
       - name: Pass the baton (start next run)
         if: success() && (github.event.inputs.step == 'run' || github.event_name == 'schedule')
