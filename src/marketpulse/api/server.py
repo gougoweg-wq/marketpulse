@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 
 from marketpulse.config import settings
 from marketpulse.db.models import (
-    Article, Decision, DecisionReason, Direction, InsiderFiling, LogEntry,
+    Article, Decision, DecisionReason, Direction, InsiderFiling, LogEntry, ModelBlob,
     NewsCluster, PriceBar, Source, Trade, TradeStatus,
 )
 from marketpulse.db.session import db_session
@@ -163,10 +163,8 @@ def summary():
         wins = s.execute(select(func.count(Decision.id)).where(Decision.realized_return > 0)).scalar()
         done = s.execute(select(func.count(Decision.id)).where(Decision.realized_return.isnot(None))).scalar()
         n_insiders = s.execute(select(func.count(InsiderFiling.id))).scalar()
-        model_version = s.execute(
-            select(Decision.model_version).where(Decision.model_version != "copy")
-            .order_by(Decision.id.desc()).limit(1)
-        ).scalar() or "v0"
+        blob = s.get(ModelBlob, 1)
+        model_version = blob.version if blob else "v0"
     return {
         "equity": equity, "starting_equity": STARTING_EQUITY,
         "pnl": equity - STARTING_EQUITY, "exposure": exposure,
