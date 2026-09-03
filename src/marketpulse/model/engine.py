@@ -58,6 +58,14 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
     created = 0
 
     with db_session() as s:
+        # рынок закрыт (нет свежих баров) — решений не принимаем: цена входа
+        # была бы вчерашней, а исход — фиктивным нулём с издержками
+        newest_bar = s.execute(
+            select(PriceBar.ts).order_by(PriceBar.ts.desc()).limit(1)
+        ).scalar()
+        if newest_bar is None or _naive(now) - newest_bar > timedelta(hours=3):
+            return {"created": 0, "market_closed": True}
+
         decided = {
             (d.cluster_id, d.symbol) for d in s.execute(
                 select(Decision).where(Decision.created_at >= _naive(now - timedelta(days=2)))
@@ -143,7 +151,11 @@ def record_outcomes(model: OnlineModel | None = None) -> dict:
             # copy-решения имеют другой набор признаков — исход фиксируем,
             # но в модель направления рынка их не скармливаем
             feats = d.features or {}
-            if d.reason != DecisionReason.copy and all(k in feats for k in FEATURE_ORDER):
+            if (
+                market_ret != 0  # нулевое движение = закрытый рынок, не сигнал
+                and d.reason != DecisionReason.copy
+                and all(k in feats for k in FEATURE_ORDER)
+            ):
                 model.learn_one(feats, went_up=market_ret > 0)
             recorded += 1
 
