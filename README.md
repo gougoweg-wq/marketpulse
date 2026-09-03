@@ -69,6 +69,17 @@ export PYTHONPATH=src
 Демо-счёт брокера (опционально): ключи Alpaca paper в `.env`
 (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`) — ордера будут дублироваться туда.
 
+## Облачный режим (работает 24/7 без компьютера)
+
+Торговый цикл запускается в GitHub Actions каждые 15 минут
+(`.github/workflows/marketpulse.yml`), состояние живёт в облачном Postgres
+(Neon), веса модели хранятся в самой базе — раннер не имеет диска между
+запусками. Локальный дашборд читает ту же базу: включил ноутбук — вся
+история на месте.
+
+Настройка: секреты `DATABASE_URL`, `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+в Settings → Secrets → Actions. Локально тот же `DATABASE_URL` в `.env`.
+
 ## Стек
 
 Python 3.14, SQLAlchemy 2, aiohttp, scikit-learn (онлайн SGD), FastAPI,
