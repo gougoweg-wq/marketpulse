@@ -135,3 +135,17 @@ def test_model_learns_from_regular_decision(no_model_save):
     model = OnlineModel()
     record_outcomes(model=model)
     assert model.n_seen == 1                   # flat тоже обучает (метка = рынок)
+
+
+def test_features_accept_timezone_aware_bars():
+    """Postgres отдаёт tz-aware даты — признаки не должны падать на сравнении."""
+    from marketpulse.model.features import build_features
+    from marketpulse.db.models import NewsCluster
+    aware_start = T0 - timedelta(hours=40)
+    bars = [PriceBar(symbol="TZ", interval="1h", ts=aware_start + timedelta(hours=i),
+                     open=10, high=10, low=10, close=10 + i * 0.01, volume=100)
+            for i in range(40)]
+    cluster = NewsCluster(representative_title="t", first_seen_at=T0, n_articles=1,
+                          n_sources=1, tickers=["TZ"], sentiment=0.3)
+    feats = build_features(cluster, "TZ", T0, ctx={"bars": {"TZ": bars}, "clusters": [cluster]})
+    assert feats is not None and "ret_24h" in feats

@@ -284,7 +284,7 @@ def events(filter: str = "important", limit: int = 40):
             # ранжирование: охват источников + тикеры + сила тональности,
             # только свежее окно — иначе топ навсегда займут старые события
             recent = [c for c in rows if c.first_seen_at
-                      and (now - c.first_seen_at).total_seconds() < 48 * 3600]
+                      and (now - c.first_seen_at.replace(tzinfo=None)).total_seconds() < 48 * 3600]
             rows = sorted(
                 recent or rows,
                 key=lambda c: (

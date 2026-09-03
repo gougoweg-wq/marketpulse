@@ -63,7 +63,7 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
         newest_bar = s.execute(
             select(PriceBar.ts).order_by(PriceBar.ts.desc()).limit(1)
         ).scalar()
-        if newest_bar is None or _naive(now) - newest_bar > timedelta(hours=3):
+        if newest_bar is None or _naive(now) - _naive(newest_bar) > timedelta(hours=3):
             return {"created": 0, "market_closed": True}
 
         decided = {

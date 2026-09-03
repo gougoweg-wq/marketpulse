@@ -62,7 +62,8 @@ def build_features(cluster: NewsCluster, symbol: str, at: datetime, ctx: dict | 
         with db_session() as s:
             ctx = load_feature_context(s, [symbol], at)
 
-    bars = [b for b in ctx["bars"].get(symbol, []) if b.ts < at_n][-24 * 7:]
+    # Postgres отдаёт даты с поясом, SQLite — без: сравниваем в одном виде
+    bars = [b for b in ctx["bars"].get(symbol, []) if _naive(b.ts) < at_n][-24 * 7:]
     if len(bars) < 30:
         return None
     closes = [b.close for b in bars]
