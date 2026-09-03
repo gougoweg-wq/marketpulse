@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import yfinance as yf
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from marketpulse.config import settings
 from marketpulse.db.models import LogEntry, PriceBar
@@ -60,19 +60,22 @@ def fetch_prices(symbols: list[str] | None = None) -> dict:
             # SQLite отдаёт naive datetime — нормализуем для сравнения
             existing = {t.replace(tzinfo=None) for t in existing}
 
+            batch = []
             for ts, row in df.iterrows():
                 ts_utc = ts.tz_convert("UTC") if ts.tzinfo else ts.tz_localize("UTC")
                 key = ts_utc.tz_localize(None).to_pydatetime()
                 if key in existing:
                     continue
-                s.add(PriceBar(
-                    symbol=sym, interval=interval,
-                    ts=ts_utc.to_pydatetime(),
+                batch.append(dict(
+                    symbol=sym, interval=interval, ts=ts_utc.to_pydatetime(),
                     open=float(row["Open"]), high=float(row["High"]),
                     low=float(row["Low"]), close=float(row["Close"]),
                     volume=float(row["Volume"] or 0),
                 ))
-                inserted += 1
+            if batch:
+                # одним пакетом: построчная вставка в удалённый Postgres — минуты
+                s.execute(insert(PriceBar), batch)
+                inserted += len(batch)
 
         s.add(LogEntry(
             component="market",
