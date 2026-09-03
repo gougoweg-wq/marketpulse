@@ -2,15 +2,20 @@ name: marketpulse-tick
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # каждые 15 минут (UTC)
+    - cron: "*/30 * * * *"   # запасной реаниматор цепочки (крон GitHub ненадёжен)
   workflow_dispatch:
     inputs:
       step:
         description: "Что выполнить"
-        default: "tick"
+        default: "run"
         type: choice
-        options: [tick, replay]
+        options: [run, tick, replay]
 
+permissions:
+  actions: write   # чтобы задача могла запустить следующую себя
+  contents: read
+
+# одна активная задача; новая ждёт в очереди, а не дублирует торговлю
 concurrency:
   group: marketpulse
   cancel-in-progress: false
@@ -18,7 +23,7 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 355     # лимит GitHub — 6 часов
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,11 +31,17 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Run pipeline step
+      - name: Run pipeline
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           PYTHONPATH: src
           PYTHONUNBUFFERED: "1"
-        run: python -m marketpulse.cli ${{ github.event.inputs.step || 'tick' }}
+          RUN_MAX_HOURS: "5.6"
+        run: python -m marketpulse.cli ${{ github.event.inputs.step || 'run' }}
+      - name: Pass the baton (start next run)
+        if: success() && (github.event.inputs.step == 'run' || github.event_name == 'schedule')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run marketpulse-tick --ref main -f step=run

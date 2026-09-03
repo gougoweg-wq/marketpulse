@@ -88,9 +88,18 @@ def cmd_run() -> None:
     from marketpulse.nlp.dedup import cluster_new_articles
     from marketpulse.trading.executor import close_expired_trades, execute_new_decisions
 
+    import os
+
     interval_sec = 15 * 60
-    print(f"Запуск основного цикла, тик каждые {interval_sec // 60} мин. Ctrl+C для остановки.")
+    # RUN_MAX_HOURS: в облаке задача живёт < 6 ч и передаёт эстафету следующей
+    max_hours = float(os.environ.get("RUN_MAX_HOURS", "0") or 0)
+    deadline = time.time() + max_hours * 3600 if max_hours else None
+    print(f"Запуск основного цикла, тик каждые {interval_sec // 60} мин"
+          + (f", лимит {max_hours} ч" if max_hours else ", Ctrl+C для остановки") + ".", flush=True)
     while True:
+        if deadline and time.time() + interval_sec > deadline:
+            print("[цикл] лимит времени — передаю эстафету", flush=True)
+            break
         started = time.time()
         try:
             c = asyncio.run(collect_once())
@@ -103,7 +112,8 @@ def cmd_run() -> None:
             print(
                 f"[тик] новостей +{c['new_articles']}, событий +{n['new_clusters']}, "
                 f"баров +{p['inserted']}, решений +{d['created']}, "
-                f"сделок +{t1['opened']}/-{t2['closed']}, исходов +{o['recorded']}"
+                f"сделок +{t1['opened']}/-{t2['closed']}, исходов +{o['recorded']}",
+                flush=True,
             )
         except KeyboardInterrupt:
             raise
