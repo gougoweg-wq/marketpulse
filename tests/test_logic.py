@@ -17,6 +17,7 @@ from marketpulse.nlp.sentiment import score_sentiment  # noqa: E402
 from marketpulse.model.engine import record_outcomes, ROUND_TRIP_COST  # noqa: E402
 from marketpulse.model.learner import OnlineModel  # noqa: E402
 from marketpulse.model.features import FEATURE_ORDER, clean_text  # noqa: E402
+from marketpulse.config import settings  # noqa: E402
 
 init_db()
 
@@ -149,3 +150,25 @@ def test_features_accept_timezone_aware_bars():
                           n_sources=1, tickers=["TZ"], sentiment=0.3)
     feats = build_features(cluster, "TZ", T0, ctx={"bars": {"TZ": bars}, "clusters": [cluster]})
     assert feats is not None and "ret_24h" in feats
+
+
+def test_executor_caps_concentration_per_symbol(monkeypatch):
+    """Три сигнала по одному тикеру в один тик не должны собрать 15% капитала в нём."""
+    from marketpulse.trading import executor
+    from marketpulse.db.models import Trade, TradeStatus
+
+    monkeypatch.setattr(executor, "_alpaca_client", lambda: None)
+    with db_session() as s:
+        for i in range(3):
+            s.add(Decision(
+                symbol="CONC", direction=Direction.long, reason=DecisionReason.model,
+                confidence=0.75, features={k: 0.0 for k in FEATURE_ORDER},
+                horizon_hours=4, created_at=T0.replace(tzinfo=None), entry_price=100.0,
+            ))
+    executor.execute_new_decisions()
+    with db_session() as s:
+        opened = s.query(Trade).filter_by(symbol="CONC", status=TradeStatus.filled).all()
+        total = sum(t.notional for t in opened)
+    # лимит: 2 × max_position_pct от капитала
+    assert total <= executor.STARTING_EQUITY * settings.max_position_pct * 2 + 1e-6
+    assert len(opened) < 3

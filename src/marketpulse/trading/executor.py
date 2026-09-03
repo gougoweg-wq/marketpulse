@@ -87,6 +87,11 @@ def execute_new_decisions() -> dict:
             )
         ).scalars().all()
 
+        # экспозиция по тикеру среди открытых — лимит концентрации
+        symbol_exposure: dict[str, float] = {}
+        for t in s.execute(select(Trade).where(Trade.status == TradeStatus.filled)).scalars():
+            symbol_exposure[t.symbol] = symbol_exposure.get(t.symbol, 0.0) + t.notional
+
         for d in pending:
             if d.id in traded:
                 continue
@@ -99,6 +104,12 @@ def execute_new_decisions() -> dict:
             if exposure + notional > equity * settings.max_gross_exposure:
                 skipped_risk += 1
                 continue
+            # не более 2× размера позиции в одном тикере: три новости про META
+            # в одном тике — не повод держать 15% капитала в META
+            if symbol_exposure.get(d.symbol, 0.0) + notional > equity * settings.max_position_pct * 2:
+                skipped_risk += 1
+                continue
+            symbol_exposure[d.symbol] = symbol_exposure.get(d.symbol, 0.0) + notional
 
             qty = notional / d.entry_price
             trade = Trade(

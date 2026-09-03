@@ -46,8 +46,8 @@ def _parse_rss(source: Source, raw: bytes) -> list[dict]:
             body = BeautifulSoup(e["summary"], "lxml").get_text(" ", strip=True)
         items.append({
             "external_id": ext_id[:500],
-            "title": e.get("title", "")[:2000],
-            "body": body[:5000],
+            "title": e.get("title", "").replace("\x00", "")[:2000],
+            "body": body.replace("\x00", "")[:5000],
             "url": e.get("link", "")[:1000],
             "published_at": published,
         })
@@ -76,6 +76,7 @@ def _parse_telegram(source: Source, raw: bytes) -> list[dict]:
                 published = datetime.fromisoformat(time_el["datetime"])
             except ValueError:
                 pass
+        text = text.replace("\x00", "")
         items.append({
             "external_id": post_id[:500],
             "title": text[:300],
@@ -177,7 +178,18 @@ async def collect_once() -> dict:
                 new_articles += 1
 
         if new_rows:
-            s.execute(insert(Article), new_rows)  # один пакет вместо тысяч INSERT
+            # дубли старше окна existing_all (UNIQUE source_id+external_id) — пусть
+            # отбрасывает база, иначе один старый повтор в ленте валит весь пакет
+            from marketpulse.db.session import engine
+            if engine.dialect.name == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                stmt = pg_insert(Article).on_conflict_do_nothing(
+                    index_elements=["source_id", "external_id"])
+            else:
+                from sqlalchemy.dialects.sqlite import insert as sq_insert
+                stmt = sq_insert(Article).on_conflict_do_nothing(
+                    index_elements=["source_id", "external_id"])
+            s.execute(stmt, new_rows)  # один пакет вместо тысяч INSERT
 
         s.add(LogEntry(
             component="ingest",

@@ -90,6 +90,9 @@ def cmd_run() -> None:
 
     import os
 
+    from marketpulse.db.session import init_db
+
+    init_db()
     interval_sec = 15 * 60
     # RUN_MAX_HOURS: в облаке задача живёт < 6 ч и передаёт эстафету следующей
     max_hours = float(os.environ.get("RUN_MAX_HOURS", "0") or 0)

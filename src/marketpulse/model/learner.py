@@ -47,13 +47,18 @@ class OnlineModel:
         from marketpulse.db.models import ModelBlob
         from marketpulse.db.session import db_session
 
+        from sqlalchemy.exc import OperationalError, ProgrammingError
+
         try:
             with db_session() as s:
                 blob = s.get(ModelBlob, 1)
                 if blob is not None:
                     return pickle.loads(blob.data)
-        except Exception:  # noqa: BLE001 — таблицы может ещё не быть
-            pass
+        except (OperationalError, ProgrammingError) as exc:
+            # только "таблицы ещё нет" — любой другой сбой базы должен уронить тик,
+            # иначе свежая пустая модель затрёт обученную при следующем save()
+            if "model_blob" not in str(exc):
+                raise
         if MODEL_PATH.exists():
             with open(MODEL_PATH, "rb") as f:
                 return pickle.load(f)
