@@ -57,7 +57,13 @@ def _signed(h: int) -> int:
 
 
 def cluster_new_articles() -> dict:
-    """Обрабатывает статьи без кластера: считает simhash, ищет пару, создаёт/пополняет кластер."""
+    """Обрабатывает статьи без кластера: считает simhash, ищет пару, создаёт/пополняет кластер.
+
+    Все данные окна грузятся двумя запросами — против удалённого Postgres
+    построчные обращения (N+1) превращают тик в десятки минут.
+    """
+    from marketpulse.model.features import clean_text
+
     now = datetime.now(timezone.utc)
     window_start = now - CLUSTER_WINDOW
     n_new_clusters = 0
@@ -70,55 +76,58 @@ def cluster_new_articles() -> dict:
         if not pending:
             return {"processed": 0, "new_clusters": 0, "attached": 0}
 
-        # свежие кластеры и их хэши-представители
-        recent = s.execute(
-            select(NewsCluster).where(NewsCluster.first_seen_at >= window_start)
-        ).scalars().all()
-        cluster_hashes: dict[int, int] = {}
-        for c in recent:
-            rep = s.execute(
-                select(Article.simhash).where(Article.cluster_id == c.id).limit(1)
-            ).scalar()
-            if rep is not None:
-                cluster_hashes[c.id] = rep % (1 << 64)
+        recent = {
+            c.id: c for c in s.execute(
+                select(NewsCluster).where(NewsCluster.first_seen_at >= window_start)
+            ).scalars()
+        }
+        rep_hash: dict[int, int] = {}
+        cluster_sources: dict[int, set[int]] = {}
+        if recent:
+            for cid, simhash, src_id in s.execute(
+                select(Article.cluster_id, Article.simhash, Article.source_id)
+                .where(Article.cluster_id.in_(list(recent)))
+                .order_by(Article.id)
+            ):
+                if simhash is not None and cid not in rep_hash:
+                    rep_hash[cid] = simhash % (1 << 64)
+                cluster_sources.setdefault(cid, set()).add(src_id)
+
+        # кандидаты для склейки: (кластер, хэш-представитель, источники)
+        candidates: list[tuple[NewsCluster, int, set[int]]] = [
+            (recent[cid], h, cluster_sources.get(cid, set())) for cid, h in rep_hash.items()
+        ]
 
         for art in pending:
             text = f"{art.title} {art.body[:1000]}"
             h = simhash64(text)
             art.simhash = _signed(h)
 
-            best_id, best_dist = None, HAMMING_THRESHOLD + 1
-            for cid, ch in cluster_hashes.items():
-                d = hamming(h, ch)
+            best, best_dist = None, HAMMING_THRESHOLD + 1
+            for cand in candidates:
+                d = hamming(h, cand[1])
                 if d < best_dist:
-                    best_id, best_dist = cid, d
+                    best, best_dist = cand, d
 
-            if best_id is not None:
-                art.cluster_id = best_id
-                cluster = s.get(NewsCluster, best_id)
+            if best is not None:
+                cluster, _, srcs = best
+                art.cluster = cluster          # id проставится при общем flush
                 cluster.n_articles += 1
-                srcs = {
-                    a.source_id for a in s.execute(
-                        select(Article).where(Article.cluster_id == best_id)
-                    ).scalars()
-                }
+                srcs.add(art.source_id)
                 cluster.n_sources = len(srcs)
                 n_attached += 1
             else:
-                from marketpulse.model.features import clean_text
                 cleaned = clean_text(text)
-                tickers = extract_tickers(cleaned)
                 cluster = NewsCluster(
                     representative_title=art.title[:500],
                     first_seen_at=art.fetched_at or now,
                     n_articles=1, n_sources=1,
-                    tickers=tickers,
+                    tickers=extract_tickers(cleaned),
                     sentiment=score_sentiment(cleaned),
                 )
                 s.add(cluster)
-                s.flush()
-                art.cluster_id = cluster.id
-                cluster_hashes[cluster.id] = h
+                art.cluster = cluster
+                candidates.append((cluster, h, {art.source_id}))
                 n_new_clusters += 1
 
         s.add(LogEntry(

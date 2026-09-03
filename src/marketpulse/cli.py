@@ -123,15 +123,23 @@ def cmd_tick() -> None:
     from marketpulse.nlp.dedup import cluster_new_articles
     from marketpulse.trading.executor import close_expired_trades, execute_new_decisions
 
+    import time
+
+    def timed(label, fn):
+        t = time.time()
+        r = fn()
+        print(f"  {label}: {time.time() - t:.0f}s", flush=True)
+        return r
+
     init_db()
-    c = asyncio.run(collect_once())
-    n = cluster_new_articles()
-    p = fetch_prices()
-    ins = asyncio.run(fetch_insiders())
+    c = timed("сбор", lambda: asyncio.run(collect_once()))
+    n = timed("дедупликация", cluster_new_articles)
+    p = timed("котировки", fetch_prices)
+    ins = timed("инсайдеры", lambda: asyncio.run(fetch_insiders()))
     cp = generate_copy_signals()
-    d = make_decisions()
-    t1 = execute_new_decisions()
-    o = record_outcomes()
+    d = timed("решения", make_decisions)
+    t1 = timed("сделки", execute_new_decisions)
+    o = timed("исходы", record_outcomes)
     t2 = close_expired_trades()
     print(
         f"[tick] новостей +{c['new_articles']}, событий +{n['new_clusters']}, "

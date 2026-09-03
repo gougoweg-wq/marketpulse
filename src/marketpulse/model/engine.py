@@ -21,7 +21,7 @@ from marketpulse.db.models import (
     Article, Decision, DecisionReason, Direction, LogEntry, NewsCluster, PriceBar,
 )
 from marketpulse.db.session import db_session
-from marketpulse.model.features import FEATURE_ORDER, build_features
+from marketpulse.model.features import FEATURE_ORDER, build_features, load_feature_context
 from marketpulse.model.learner import OnlineModel
 
 COST_PER_SIDE = 0.0005
@@ -78,11 +78,14 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
             )
         ).scalars().all()
 
+        symbols = sorted({sym for c in fresh for sym in (c.tickers or [])})
+        ctx = load_feature_context(s, symbols, now) if symbols else None
+
         for cluster in fresh:
             for sym in cluster.tickers or []:
                 if (cluster.id, sym) in decided:
                     continue
-                feats = build_features(cluster, sym, now)
+                feats = build_features(cluster, sym, now, ctx)
                 if feats is None:
                     continue
                 direction, conf, reason = model.decide(feats)

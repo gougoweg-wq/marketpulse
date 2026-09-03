@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 import feedparser
 from bs4 import BeautifulSoup
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from marketpulse.config import settings
 from marketpulse.db.models import Article, LogEntry, Source, SourceKind
@@ -142,6 +142,15 @@ async def collect_once() -> dict:
     failed = 0
 
     with db_session() as s:
+        # одна выборка всех недавних внешних id вместо запроса на источник
+        existing_all: set[tuple[int, str]] = set(
+            s.execute(
+                select(Article.source_id, Article.external_id).where(
+                    Article.fetched_at >= now - timedelta(days=14)
+                )
+            ).all()
+        )
+        new_rows: list[dict] = []
         for src_id, items, status in results:
             src = s.get(Source, src_id)
             src.last_fetched_at = now
@@ -159,20 +168,16 @@ async def collect_once() -> dict:
 
             ok_sources += 1
             src.error_streak = 0
-            existing = {
-                row for row in s.execute(
-                    select(Article.external_id).where(
-                        Article.source_id == src_id,
-                        Article.fetched_at >= now - timedelta(days=14),
-                    )
-                ).scalars()
-            }
             for item in items:
-                if item["external_id"] in existing:
+                key = (src_id, item["external_id"])
+                if key in existing_all:
                     continue
-                existing.add(item["external_id"])  # дубли и внутри одной ленты
-                s.add(Article(source_id=src_id, fetched_at=now, **item))
+                existing_all.add(key)  # дубли и внутри одной ленты
+                new_rows.append(dict(source_id=src_id, fetched_at=now, **item))
                 new_articles += 1
+
+        if new_rows:
+            s.execute(insert(Article), new_rows)  # один пакет вместо тысяч INSERT
 
         s.add(LogEntry(
             component="ingest",
