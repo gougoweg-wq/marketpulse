@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from marketpulse.config import settings
 from marketpulse.db.models import Base
 
-engine = create_engine(settings.database_url, future=True)
+# pool_pre_ping: удалённый Postgres закрывает простаивающее соединение между тиками —
+# без проверки первый запрос после сна падает с обрывом SSL
+engine = create_engine(
+    settings.database_url, future=True, pool_pre_ping=True, pool_recycle=300,
+)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 

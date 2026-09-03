@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from marketpulse.config import settings
 from marketpulse.db.models import (
@@ -71,15 +71,19 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
                 select(Decision).where(Decision.created_at >= _naive(now - timedelta(days=2)))
             ).scalars()
         }
-        fresh = s.execute(
-            select(NewsCluster).where(
-                NewsCluster.first_seen_at >= _naive(now - FRESH_WINDOW),
-                NewsCluster.tickers != [],
-            )
-        ).scalars().all()
+        # фильтр по тикерам — в Python: у Postgres нет оператора сравнения для json
+        fresh = [
+            c for c in s.execute(
+                select(NewsCluster).where(
+                    NewsCluster.first_seen_at >= _naive(now - FRESH_WINDOW),
+                )
+            ).scalars()
+            if c.tickers
+        ]
 
         symbols = sorted({sym for c in fresh for sym in (c.tickers or [])})
         ctx = load_feature_context(s, symbols, now) if symbols else None
+        rows: list[dict] = []
 
         for cluster in fresh:
             for sym in cluster.tickers or []:
@@ -91,16 +95,19 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
                 direction, conf, reason = model.decide(feats)
                 # последняя известная цена — только для размера позиции;
                 # честная цена входа фиксируется в record_outcomes первым баром ПОСЛЕ решения
-                entry = _last_price(s, sym, now)
-                s.add(Decision(
+                bars = ctx["bars"].get(sym) if ctx else None
+                entry = bars[-1].close if bars else _last_price(s, sym, now)
+                rows.append(dict(
                     cluster_id=cluster.id, symbol=sym, direction=direction,
                     reason=reason, confidence=conf, features=feats,
                     model_version=model.version,
                     horizon_hours=settings.prediction_horizon_hours,
-                    entry_price=entry,
+                    entry_price=entry, created_at=_naive(now),
                 ))
                 created += 1
 
+        if rows:
+            s.execute(insert(Decision), rows)  # один пакет вместо сотен INSERT
         if created:
             s.add(LogEntry(
                 component="model",
@@ -188,12 +195,14 @@ def replay_history() -> dict:
         rows = s.execute(
             select(NewsCluster, Article.published_at)
             .join(Article, Article.cluster_id == NewsCluster.id)
-            .where(NewsCluster.tickers != [], Article.published_at.isnot(None))
+            .where(Article.published_at.isnot(None))
             .order_by(Article.published_at.asc())
         ).all()
 
         seen: set[tuple[int, str]] = set()
         for cluster, published_at in rows:
+            if not cluster.tickers:
+                continue
             event_time = _naive(published_at)
             for sym in cluster.tickers or []:
                 if (cluster.id, sym) in seen:
