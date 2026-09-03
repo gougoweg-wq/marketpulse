@@ -1,0 +1,30 @@
+# Core
+sqlalchemy>=2.0
+pydantic>=2.7
+pydantic-settings>=2.2
+python-dotenv>=1.0
+
+# Ingest
+aiohttp>=3.10
+feedparser>=6.0
+beautifulsoup4>=4.12
+lxml>=5.0
+
+# Market data
+yfinance>=0.2.40
+pandas>=2.2
+numpy>=1.26
+
+# NLP / model
+scikit-learn>=1.5
+
+# Trading (paper)
+alpaca-py>=0.21
+
+# API / dashboard
+fastapi>=0.111
+uvicorn[standard]>=0.30
+
+# Dev
+pytest>=8.0
+psycopg[binary]>=3.2
