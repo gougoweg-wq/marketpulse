@@ -128,6 +128,15 @@ def cmd_run() -> None:
         except Exception as exc:  # noqa: BLE001 — один сбой не должен убивать цикл
             failures += 1
             print(f"[тик] ошибка ({failures}/5): {type(exc).__name__}: {exc}", flush=True)
+            try:
+                # ошибка тика должна быть видна в базе и дашборде, а не только в stdout раннера
+                from marketpulse.db.models import LogEntry
+                from marketpulse.db.session import db_session
+                with db_session() as s:
+                    s.add(LogEntry(level="warn", component="loop",
+                                   message=f"тик упал ({failures}/5): {type(exc).__name__}: {str(exc)[:300]}"))
+            except Exception:  # noqa: BLE001
+                pass
             if failures >= 5:
                 print("[цикл] пять тиков подряд с ошибкой — останавливаюсь", flush=True)
                 sys.exit(1)
