@@ -235,4 +235,35 @@ def close_expired_trades() -> dict:
                 message=f"закрыто сделок: {closed}, PnL за партию: ${total_pnl:+,.2f}",
                 payload={"closed": closed, "pnl": total_pnl},
             ))
-    return {"closed": closed, "pnl": total_pnl}
+
+        # сверка с брокером: позиция, у которой нет открытой сделки в базе, —
+        # сирота (осталась от сбоя или старой версии), закрываем целиком
+        orphans = _reconcile_broker(s, alpaca)
+        if orphans:
+            s.add(LogEntry(
+                component="trading", level="warn",
+                message=f"сверка с брокером: закрыто позиций-сирот: {len(orphans)} ({', '.join(orphans)})",
+            ))
+    return {"closed": closed, "pnl": total_pnl, "orphans_closed": len(orphans) if alpaca else 0}
+
+
+def _reconcile_broker(s, client) -> list[str]:
+    if client is None:
+        return []
+    try:
+        positions = client.get_all_positions()
+    except Exception:  # noqa: BLE001
+        return []
+    open_symbols = set(s.execute(
+        select(Trade.symbol).where(Trade.status.in_([TradeStatus.filled, TradeStatus.submitted]))
+    ).scalars())
+    closed: list[str] = []
+    for p in positions:
+        if p.symbol in open_symbols:
+            continue
+        try:
+            client.close_position(p.symbol)
+            closed.append(p.symbol)
+        except Exception:  # noqa: BLE001
+            continue
+    return closed
