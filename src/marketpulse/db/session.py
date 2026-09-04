@@ -27,10 +27,15 @@ if _is_pg:
 
     @event.listens_for(engine, "connect")
     def _set_statement_timeout(dbapi_conn, _record):
-        # через пулер Neon startup-параметры запрещены — ставим лимит уже в сессии
-        with dbapi_conn.cursor() as cur:
-            cur.execute("SET statement_timeout = 120000")
-        dbapi_conn.commit()
+        # через пулер Neon startup-параметры запрещены — ставим лимит уже в сессии.
+        # В autocommit, чтобы не оставить открытую транзакцию: иначе SQLAlchemy
+        # не сможет переключить autocommit ("connection in transaction status ACTIVE")
+        dbapi_conn.autocommit = True
+        try:
+            with dbapi_conn.cursor() as cur:
+                cur.execute("SET statement_timeout = 120000")
+        finally:
+            dbapi_conn.autocommit = False
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
