@@ -152,18 +152,45 @@ def record_outcomes(model: OnlineModel | None = None) -> dict:
         pending = s.execute(
             select(Decision).where(Decision.outcome_recorded_at.is_(None))
         ).scalars().all()
+        due = [d for d in pending
+               if _naive(now) >= _naive(d.created_at) + timedelta(hours=d.horizon_hours)]
+        if not due:
+            return {"recorded": 0, "voided": 0}
 
-        for d in pending:
+        # бары всех нужных тикеров одним запросом; поиск входа/выхода — в памяти
+        from bisect import bisect_left, bisect_right
+
+        symbols = sorted({d.symbol for d in due})
+        earliest = min(_naive(d.created_at) for d in due) - timedelta(days=3)
+        bars_by_symbol: dict[str, list] = {}
+        for b in s.execute(
+            select(PriceBar).where(PriceBar.symbol.in_(symbols), PriceBar.ts >= earliest)
+            .order_by(PriceBar.symbol, PriceBar.ts)
+        ).scalars():
+            bars_by_symbol.setdefault(b.symbol, []).append(b)
+        ts_index = {sym: [_naive(b.ts) for b in bars] for sym, bars in bars_by_symbol.items()}
+
+        def bar_at(sym: str, when: datetime):
+            """Первый бар >= when."""
+            i = bisect_left(ts_index.get(sym, []), when)
+            bars = bars_by_symbol.get(sym, [])
+            return bars[i] if i < len(bars) else None
+
+        def last_bar(sym: str, when: datetime):
+            """Последний бар <= when."""
+            i = bisect_right(ts_index.get(sym, []), when) - 1
+            bars = bars_by_symbol.get(sym, [])
+            return bars[i] if i >= 0 else None
+
+        for d in due:
             horizon_end = _naive(d.created_at) + timedelta(hours=d.horizon_hours)
-            if _naive(now) < horizon_end:
-                continue
             # честный вход: первый бар ПОСЛЕ решения (никакого взгляда назад)
-            entry_bar = _bar_at(s, d.symbol, _naive(d.created_at))
-            exit_bar = _bar_at(s, d.symbol, horizon_end)
+            entry_bar = bar_at(d.symbol, _naive(d.created_at))
+            exit_bar = bar_at(d.symbol, horizon_end)
             if exit_bar is None and _naive(now) - horizon_end > timedelta(hours=2):
                 # горизонт пришёлся на закрытый рынок — выходим по последнему
                 # бару до горизонта (эквивалент выхода по закрытию сессии)
-                exit_bar = _last_bar(s, d.symbol, horizon_end)
+                exit_bar = last_bar(d.symbol, horizon_end)
             if entry_bar is None or exit_bar is None:
                 if _naive(now) - horizon_end > VOID_AFTER:
                     # цен так и не появилось (тикер выбыл) — аннулируем, не держим экспозицию
