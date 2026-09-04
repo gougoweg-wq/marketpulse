@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import threading
 import time
@@ -17,12 +18,29 @@ from marketpulse.db.models import (
     Article, Decision, DecisionReason, Direction, InsiderFiling, LogEntry, ModelBlob,
     NewsCluster, PriceBar, Source, Trade, TradeStatus,
 )
-from marketpulse.db.session import db_session
+from marketpulse.db.session import db_session, engine
 from marketpulse.model.features import clean_text
 from marketpulse.trading.executor import STARTING_EQUITY, account_equity, open_exposure
 
 app = FastAPI(title="MarketPulse")
 DASHBOARD = Path(__file__).resolve().parents[3] / "dashboard" / "index.html"
+
+# Торговые шаги из дашборда разрешены только на локальной SQLite: против облачной
+# базы они дублировали бы работу цепочки GitHub Actions (двойные ордера, двойное обучение)
+LOCAL_PIPELINE_ALLOWED = (
+    engine.dialect.name == "sqlite" or os.environ.get("MARKETPULSE_ALLOW_LOCAL_PIPELINE") == "1"
+)
+TRADING_ACTIONS = {"decide", "trade", "outcomes", "insiders"}
+_ACTION_LOCK = threading.Lock()  # шаги пайплайна не выполняются параллельно
+
+
+def _iso(dt) -> str | None:
+    """ISO с явным UTC: SQLite отдаёт naive, браузер трактовал бы их как местное время."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
 _CYR = re.compile("[а-яё]", re.I)
 
@@ -59,7 +77,8 @@ def _run_action(name: str):
     }
     fn = actions[name]
     try:
-        result = fn()
+        with _ACTION_LOCK:
+            result = fn()
         with _JOBS_LOCK:
             JOBS[name] = {**JOBS[name], "status": "done", "result": result,
                           "finished_at": time.time()}
@@ -77,6 +96,9 @@ ACTION_NAMES = {"collect", "nlp", "prices", "decide", "trade", "outcomes", "insi
 def run_action(name: str):
     if name not in ACTION_NAMES:
         raise HTTPException(404, "нет такого действия")
+    if name in TRADING_ACTIONS and not LOCAL_PIPELINE_ALLOWED:
+        raise HTTPException(409, "торговый пайплайн живёт в облаке (GitHub Actions); "
+                                 "локально разрешены только сбор, обработка и котировки")
     with _JOBS_LOCK:
         if JOBS.get(name, {}).get("status") == "running":
             return {"status": "already_running"}
@@ -120,6 +142,8 @@ def _run_action_sync(name: str):
 
 @app.post("/api/loop/start")
 def loop_start():
+    if not LOCAL_PIPELINE_ALLOWED:
+        raise HTTPException(409, "цикл уже работает в облаке — локальный запуск отключён")
     if LOOP_STATE["running"]:
         return {"status": "already_running"}
     _LOOP_STOP.clear()
@@ -160,8 +184,10 @@ def summary():
         dirs = dict(s.execute(
             select(Decision.direction, func.count()).group_by(Decision.direction)
         ).all())
-        wins = s.execute(select(func.count(Decision.id)).where(Decision.realized_return > 0)).scalar()
-        done = s.execute(select(func.count(Decision.id)).where(Decision.realized_return.isnot(None))).scalar()
+        wins = s.execute(select(func.count(Decision.id)).where(
+            Decision.realized_return > 0, Decision.direction != Direction.flat)).scalar()
+        done = s.execute(select(func.count(Decision.id)).where(
+            Decision.realized_return.isnot(None), Decision.direction != Direction.flat)).scalar()
         n_insiders = s.execute(select(func.count(InsiderFiling.id))).scalar()
         blob = s.get(ModelBlob, 1)
         model_version = blob.version if blob else "v0"
@@ -182,16 +208,22 @@ def summary():
 def watchlist():
     """Тикер-лента: последняя цена и изменение за 24ч."""
     out = []
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     with db_session() as s:
+        by_sym: dict[str, list] = {}
+        for b in s.execute(
+            select(PriceBar).where(
+                PriceBar.symbol.in_(settings.watchlist),
+                PriceBar.ts >= now - timedelta(days=5),
+            ).order_by(PriceBar.ts.asc())
+        ).scalars():
+            by_sym.setdefault(b.symbol, []).append(b)
         for sym in settings.watchlist:
-            bars = s.execute(
-                select(PriceBar).where(PriceBar.symbol == sym)
-                .order_by(PriceBar.ts.desc()).limit(25)
-            ).scalars().all()
+            bars = by_sym.get(sym)
             if not bars:
                 continue
-            last = bars[0].close
-            prev = bars[-1].close if len(bars) >= 24 else bars[-1].close
+            last = bars[-1].close
+            prev = bars[max(0, len(bars) - 25)].close
             out.append({"symbol": sym, "price": last,
                         "change": (last / prev - 1) if prev else 0})
     return out
@@ -206,7 +238,7 @@ def equity_curve():
             select(Trade).where(Trade.status == TradeStatus.closed).order_by(Trade.closed_at)
         ).scalars():
             eq += t.pnl or 0.0
-            points.append({"ts": t.closed_at.isoformat() if t.closed_at else None, "equity": eq})
+            points.append({"ts": _iso(t.closed_at), "equity": eq})
     return points
 
 
@@ -243,19 +275,27 @@ def decisions(limit: int = 60):
         rows = s.execute(select(Decision).order_by(Decision.id.desc()).limit(limit)).scalars().all()
         # сила сигнала: перцентиль |edge| среди последних 500 решений
         recent = s.execute(
-            select(Decision.confidence).order_by(Decision.id.desc()).limit(500)
+            select(Decision.confidence).where(
+                Decision.direction != Direction.flat,
+                Decision.reason != DecisionReason.exploration,
+            ).order_by(Decision.id.desc()).limit(500)
         ).scalars().all()
-        edges = sorted(abs(c - 0.5) for c in recent)
+        edges = sorted(round(abs(c - 0.5), 6) for c in recent if abs(c - 0.5) > 1e-9)
 
-        def strength(conf: float) -> int:
-            if not edges:
-                return 50
-            rank = bisect_right(edges, abs(conf - 0.5)) / len(edges)
+        def strength(conf: float) -> int | None:
+            edge = round(abs(conf - 0.5), 6)
+            if edge <= 0 or not edges:
+                return None
+            from bisect import bisect_left
+            rank = (bisect_left(edges, edge) + bisect_right(edges, edge)) / 2 / len(edges)
             return max(1, min(99, round(rank * 100)))
 
+        cluster_ids = [d.cluster_id for d in rows if d.cluster_id]
+        clusters = {c.id: c for c in s.execute(
+            select(NewsCluster).where(NewsCluster.id.in_(cluster_ids))).scalars()} if cluster_ids else {}
         out = []
         for d in rows:
-            cluster = s.get(NewsCluster, d.cluster_id) if d.cluster_id else None
+            cluster = clusters.get(d.cluster_id) if d.cluster_id else None
             title = None
             if cluster:
                 title = clean_text(cluster.representative_title)[:130]
@@ -268,7 +308,7 @@ def decisions(limit: int = 60):
                 "strength": strength(d.confidence),
                 "sentiment": (d.features or {}).get("sentiment"),
                 "title": title,
-                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "created_at": _iso(d.created_at),
                 "realized_return": d.realized_return,
             })
         return out
@@ -313,7 +353,7 @@ def events(filter: str = "important", limit: int = 40):
                 "id": c.id, "title": title[:160], "lang": lang,
                 "tickers": c.tickers, "sentiment": c.sentiment,
                 "n_sources": c.n_sources, "n_articles": c.n_articles,
-                "first_seen_at": c.first_seen_at.isoformat() if c.first_seen_at else None,
+                "first_seen_at": _iso(c.first_seen_at),
             })
             if len(out) >= limit:
                 break
@@ -330,7 +370,7 @@ def insiders(limit: int = 30):
             "symbol": f.symbol, "company": f.company, "insider": f.insider_name,
             "code": f.transaction_code, "shares": f.shares, "price": f.price,
             "value_usd": f.value_usd, "copied": bool(f.copied),
-            "filed_at": f.filed_at.isoformat() if f.filed_at else None,
+            "filed_at": _iso(f.filed_at),
             "url": f.url,
         } for f in rows]
 
@@ -338,10 +378,12 @@ def insiders(limit: int = 30):
 @app.get("/api/trades")
 def trades(limit: int = 60):
     with db_session() as s:
-        rows = s.execute(select(Trade).order_by(Trade.id.desc()).limit(limit)).scalars().all()
+        pairs = s.execute(
+            select(Trade, Decision).join(Decision, Decision.id == Trade.decision_id)
+            .order_by(Trade.id.desc()).limit(limit)
+        ).all()
         out = []
-        for t in rows:
-            d = s.get(Decision, t.decision_id)
+        for t, d in pairs:
             out.append({
                 "id": t.id, "symbol": t.symbol, "direction": t.direction.value,
                 "notional": t.notional, "status": t.status.value,
@@ -349,7 +391,7 @@ def trades(limit: int = 60):
                 "pnl": t.pnl,
                 "confidence": d.confidence if d else None,
                 "reason": d.reason.value if d else None,
-                "submitted_at": t.submitted_at.isoformat() if t.submitted_at else None,
+                "submitted_at": _iso(t.submitted_at),
             })
         return out
 
@@ -359,7 +401,7 @@ def logs(limit: int = 120):
     with db_session() as s:
         rows = s.execute(select(LogEntry).order_by(LogEntry.id.desc()).limit(limit)).scalars().all()
         return [{
-            "ts": e.ts.isoformat() if e.ts else None, "level": e.level,
+            "ts": _iso(e.ts), "level": e.level,
             "component": e.component, "message": e.message,
         } for e in rows]
 

@@ -18,9 +18,30 @@ AMBIGUOUS = {"V", "MA", "KO", "BA", "DIS", "GS", "USO", "ALL", "ON", "IT", "A"}
 _DOLLAR_RE = re.compile(r"[$]([A-Z]{1,5})\b")
 _EXCH_RE = re.compile(r"\b(?:NYSE|NASDAQ|AMEX)[:\s]([A-Z]{1,5})\b")
 
-# название компании -> тикер, с вариантами
+# названия-омонимы: "visa rules", "Boris Johnson", "gold medal", "Nasdaq closes"
+# ничего не говорят о компании — для них нужен контекст
+_CONTEXT_PATTERNS: dict[str, str] = {
+    "V": r"\bVisa(?:'s| Inc| stock| shares| card network| earnings)\b",
+    "MA": r"\bMastercard\b",
+    "META": r"\bMeta(?:'s| Platforms| stock| shares| earnings| AI)\b",
+    "INTC": r"\bIntel(?:'s| Corp| stock| shares| chips?| foundry| earnings)\b",
+    "JNJ": r"Johnson\s*&\s*Johnson|\bJ&J\b",
+    "IWM": r"Russell\s*2000",
+    "QQQ": r"Nasdaq[- ]?100|Nasdaq Composite|\bQQQ\b",
+    "GLD": r"\bgold (?:price|prices|futures|rally|rallies|miners|bullion|ETF)",
+    "SLV": r"\bsilver (?:price|prices|futures|rally|ETF)",
+    "TLT": r"Treasury (?:yields?|bonds?|market)|\bTreasuries\b",
+    "USO": r"\b(?:crude|oil) (?:price|prices|futures)|\bWTI\b|\bBrent\b",
+    "KO": r"Coca[- ]Cola",
+    "DIS": r"\bDisney\b",
+    "BA": r"\bBoeing\b",
+    "GS": r"Goldman Sachs",
+}
 _NAME_PATTERNS: list[tuple[re.Pattern, str]] = []
 for sym, name in TICKER_QUERY.items():
+    if sym in _CONTEXT_PATTERNS:
+        _NAME_PATTERNS.append((re.compile(_CONTEXT_PATTERNS[sym], re.I), sym))
+        continue
     base = name.split()[0]
     if len(base) < 4:            # "AMD", "S&P" — ловим только как тикер
         continue

@@ -211,7 +211,7 @@ def seed_sources() -> int:
 
     specs = build_catalog()
     with db_session() as s:
-        existing = {row.url for row in s.execute(select(Source.url)).scalars()}
+        existing = set(s.execute(select(Source.url)).scalars())
         for spec in specs:
             if spec.url not in existing:
                 s.add(Source(

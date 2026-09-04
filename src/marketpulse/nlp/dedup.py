@@ -86,7 +86,8 @@ def cluster_new_articles() -> dict:
         if recent:
             for cid, simhash, src_id in s.execute(
                 select(Article.cluster_id, Article.simhash, Article.source_id)
-                .where(Article.cluster_id.in_(list(recent)))
+                .join(NewsCluster, NewsCluster.id == Article.cluster_id)
+                .where(NewsCluster.first_seen_at >= window_start)  # JOIN: без лимита bind-параметров
                 .order_by(Article.id)
             ):
                 if simhash is not None and cid not in rep_hash:

@@ -1,30 +1,44 @@
 """Загрузка котировок через yfinance.
 
-Часовые бары за последние N дней по всему вотчлисту. Повторный запуск
-дозагружает только новое (upsert по (symbol, interval, ts)).
+Часовые бары по всему вотчлисту. Вставка — upsert по (symbol, interval, ts):
+yfinance отдаёт текущий незавершённый бар, и его нужно ОБНОВЛЯТЬ на каждом
+тике, иначе в базе навсегда останется цена/объём первых минут часа.
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import yfinance as yf
-from sqlalchemy import insert, select
+from sqlalchemy import func, select
 
 from marketpulse.config import settings
 from marketpulse.db.models import LogEntry, PriceBar
-from marketpulse.db.session import db_session
+from marketpulse.db.session import db_session, engine
 
 log = logging.getLogger("market")
 
 HISTORY_DAYS = 60  # для 1h-баров yfinance отдаёт максимум ~730 дней
+BAR_COLUMNS = ("open", "high", "low", "close", "volume")
+
+
+def _upsert_stmt():
+    """INSERT ... ON CONFLICT (symbol, interval, ts) DO UPDATE — для обоих диалектов."""
+    if engine.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    stmt = dialect_insert(PriceBar)
+    return stmt.on_conflict_do_update(
+        index_elements=["symbol", "interval", "ts"],
+        set_={c: getattr(stmt.excluded, c) for c in BAR_COLUMNS},
+    )
 
 
 def fetch_prices(symbols: list[str] | None = None) -> dict:
     symbols = symbols or settings.watchlist
     interval = settings.price_bar_interval
-    inserted = 0
     failed: list[str] = []
 
     # один батч-запрос на все тикеры сразу
@@ -38,70 +52,50 @@ def fetch_prices(symbols: list[str] | None = None) -> dict:
         progress=False,
     )
 
+    rows: list[dict] = []
     with db_session() as s:
+        # что уже есть: по каждому тикеру последний бар — обновляем только хвост
+        # (последние 2 дня), иначе каждый тик гонял бы через океан 60 дней истории
+        last_ts = dict(s.execute(
+            select(PriceBar.symbol, func.max(PriceBar.ts))
+            .where(PriceBar.interval == interval).group_by(PriceBar.symbol)
+        ).all())
+
         for sym in symbols:
             try:
-                df = data[sym] if len(symbols) > 1 else data
+                # с group_by="ticker" колонки всегда двухуровневые (тикер, поле)
+                df = data[sym] if isinstance(data.columns, pd.MultiIndex) else data
             except KeyError:
                 failed.append(sym)
                 continue
-            df = df.dropna(subset=["Close"])
+            df = df.dropna(subset=["Open", "High", "Low", "Close"])
             if df.empty:
                 failed.append(sym)
                 continue
 
-            existing = {
-                ts for ts in s.execute(
-                    select(PriceBar.ts).where(
-                        PriceBar.symbol == sym, PriceBar.interval == interval
-                    )
-                ).scalars()
-            }
-            # SQLite отдаёт naive datetime — нормализуем для сравнения
-            existing = {t.replace(tzinfo=None) for t in existing}
+            floor = None
+            if last_ts.get(sym) is not None:
+                floor = last_ts[sym].replace(tzinfo=None) - timedelta(days=2)
 
-            batch = []
             for ts, row in df.iterrows():
                 ts_utc = ts.tz_convert("UTC") if ts.tzinfo else ts.tz_localize("UTC")
-                key = ts_utc.tz_localize(None).to_pydatetime()
-                if key in existing:
+                if floor is not None and ts_utc.tz_localize(None).to_pydatetime() < floor:
                     continue
-                batch.append(dict(
+                vol = row["Volume"]
+                rows.append(dict(
                     symbol=sym, interval=interval, ts=ts_utc.to_pydatetime(),
                     open=float(row["Open"]), high=float(row["High"]),
                     low=float(row["Low"]), close=float(row["Close"]),
-                    volume=float(row["Volume"] or 0),
+                    volume=0.0 if pd.isna(vol) else float(vol),  # NaN не должен попасть в базу
                 ))
-            if batch:
-                # одним пакетом: построчная вставка в удалённый Postgres — минуты
-                s.execute(insert(PriceBar), batch)
-                inserted += len(batch)
+
+        if rows:
+            s.execute(_upsert_stmt(), rows)  # один пакет, upsert
 
         s.add(LogEntry(
             component="market",
-            message=f"котировки: +{inserted} баров, ошибок: {len(failed)}",
-            payload={"inserted": inserted, "failed": failed},
+            message=f"котировки: обновлено {len(rows)} баров, ошибок: {len(failed)}",
+            payload={"upserted": len(rows), "failed": failed},
         ))
 
-    return {"inserted": inserted, "failed": failed}
-
-
-def latest_price(symbol: str) -> float | None:
-    with db_session() as s:
-        bar = s.execute(
-            select(PriceBar).where(PriceBar.symbol == symbol)
-            .order_by(PriceBar.ts.desc()).limit(1)
-        ).scalar()
-        return bar.close if bar else None
-
-
-def price_at(symbol: str, when: datetime) -> float | None:
-    """Ближайший бар ПОСЛЕ момента when — цена, по которой реально можно было войти."""
-    with db_session() as s:
-        bar = s.execute(
-            select(PriceBar).where(
-                PriceBar.symbol == symbol,
-                PriceBar.ts >= when.replace(tzinfo=None) if when.tzinfo else when,
-            ).order_by(PriceBar.ts.asc()).limit(1)
-        ).scalar()
-        return bar.close if bar else None
+    return {"inserted": len(rows), "failed": failed}

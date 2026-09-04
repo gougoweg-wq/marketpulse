@@ -66,7 +66,7 @@ def _seed_bars(s, symbol: str, start: datetime, closes: list[float]):
 
 @pytest.fixture()
 def no_model_save(monkeypatch):
-    monkeypatch.setattr(OnlineModel, "save", lambda self: None)
+    monkeypatch.setattr(OnlineModel, "save", lambda self, session=None: None)
 
 
 def test_outcome_uses_first_bar_after_decision(no_model_save):
@@ -158,12 +158,14 @@ def test_executor_caps_concentration_per_symbol(monkeypatch):
     from marketpulse.db.models import Trade, TradeStatus
 
     monkeypatch.setattr(executor, "_alpaca_client", lambda: None)
+    monkeypatch.setattr(executor, "_market_open", lambda s, c: True)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     with db_session() as s:
         for i in range(3):
             s.add(Decision(
                 symbol="CONC", direction=Direction.long, reason=DecisionReason.model,
                 confidence=0.75, features={k: 0.0 for k in FEATURE_ORDER},
-                horizon_hours=4, created_at=T0.replace(tzinfo=None), entry_price=100.0,
+                horizon_hours=4, created_at=now, entry_price=100.0,
             ))
     executor.execute_new_decisions()
     with db_session() as s:
@@ -172,3 +174,71 @@ def test_executor_caps_concentration_per_symbol(monkeypatch):
     # лимит: 2 × max_position_pct от капитала
     assert total <= executor.STARTING_EQUITY * settings.max_position_pct * 2 + 1e-6
     assert len(opened) < 3
+
+
+
+def test_executor_skips_when_market_closed(monkeypatch):
+    """При закрытом рынке сделки не открываются, решение остаётся без сделки."""
+    from marketpulse.trading import executor
+    from marketpulse.db.models import Trade
+
+    monkeypatch.setattr(executor, "_alpaca_client", lambda: None)
+    monkeypatch.setattr(executor, "_market_open", lambda s, c: False)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with db_session() as s:
+        s.add(Decision(
+            symbol="CLSD", direction=Direction.long, reason=DecisionReason.model,
+            confidence=0.8, features={k: 0.0 for k in FEATURE_ORDER},
+            horizon_hours=4, created_at=now, entry_price=50.0,
+        ))
+    r = executor.execute_new_decisions()
+    assert r.get("market_closed") is True
+    with db_session() as s:
+        assert s.query(Trade).filter_by(symbol="CLSD").count() == 0
+
+
+def test_executor_ignores_stale_decisions(monkeypatch):
+    """Решение старше одного тика (риск-лимит отложил) не исполняется задним числом."""
+    from marketpulse.trading import executor
+    from marketpulse.db.models import Trade
+
+    monkeypatch.setattr(executor, "_alpaca_client", lambda: None)
+    monkeypatch.setattr(executor, "_market_open", lambda s, c: True)
+    old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=5)
+    with db_session() as s:
+        s.add(Decision(
+            symbol="STALE", direction=Direction.short, reason=DecisionReason.model,
+            confidence=0.8, features={k: 0.0 for k in FEATURE_ORDER},
+            horizon_hours=4, created_at=old, entry_price=50.0,
+        ))
+    executor.execute_new_decisions()
+    with db_session() as s:
+        assert s.query(Trade).filter_by(symbol="STALE").count() == 0
+
+
+def test_same_bar_entry_exit_is_voided(no_model_save):
+    """Вход и выход на одном баре — сделки не было: 0 без издержек, модель не учится."""
+    with db_session() as s:
+        # единственный бар после решения — и он же «выход» по fallback
+        _seed_bars(s, "SAME", T0 + timedelta(hours=1), [10.0])
+        s.add(Decision(
+            symbol="SAME", direction=Direction.long, reason=DecisionReason.model,
+            confidence=0.7, features={k: 0.0 for k in FEATURE_ORDER},
+            horizon_hours=4, created_at=T0.replace(tzinfo=None), entry_price=10.0,
+        ))
+    model = OnlineModel()
+    r = record_outcomes(model=model)
+    assert r["voided"] >= 1
+    assert model.n_seen == 0
+    with db_session() as s:
+        d = s.query(Decision).filter_by(symbol="SAME").one()
+        assert d.realized_return == 0.0 and d.outcome_recorded_at is not None
+
+
+def test_tickers_ignore_homonyms():
+    assert "V" not in extract_tickers("US tightens visa rules for students")
+    assert "V" in extract_tickers("Visa Inc reports record quarter")
+    assert "JNJ" not in extract_tickers("Boris Johnson resigns")
+    assert "JNJ" in extract_tickers("Johnson & Johnson settles talc lawsuit")
+    assert "GLD" not in extract_tickers("She won a gold medal in Paris")
+    assert "GLD" in extract_tickers("Gold prices hit record high")

@@ -126,6 +126,14 @@ async def _fetch_one(
 async def collect_once() -> dict:
     """Один проход по всем активным источникам. Возвращает сводку."""
     with db_session() as s:
+        # реабилитация: источник, отключённый больше суток назад, получает второй шанс
+        # (с половиной лимита ошибок) — иначе временный 429 отключал бы его навсегда
+        day_ago = datetime.now(timezone.utc) - timedelta(hours=24)
+        for src in s.execute(
+            select(Source).where(Source.enabled == 0, Source.last_fetched_at < day_ago)
+        ).scalars():
+            src.enabled = 1
+            src.error_streak = MAX_ERROR_STREAK // 2
         sources = s.execute(
             select(Source.id, Source.kind, Source.url).where(Source.enabled == 1)
         ).all()
@@ -152,8 +160,14 @@ async def collect_once() -> dict:
             ).all()
         )
         new_rows: list[dict] = []
+        # все источники одним запросом вместо SELECT на каждый
+        src_by_id = {
+            src.id: src for src in s.execute(
+                select(Source).where(Source.id.in_([r[0] for r in results]))
+            ).scalars()
+        }
         for src_id, items, status in results:
-            src = s.get(Source, src_id)
+            src = src_by_id[src_id]
             src.last_fetched_at = now
             src.last_status = status
             if items is None:

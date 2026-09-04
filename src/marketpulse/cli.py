@@ -82,17 +82,18 @@ def cmd_run() -> None:
     """Основной цикл: сбор -> NLP -> цены -> решения -> сделки -> исходы."""
     import time
 
+    import os
+
+    from marketpulse.db.session import init_db
     from marketpulse.ingest.collector import collect_once
+    from marketpulse.ingest.smartmoney import fetch_insiders, generate_copy_signals
     from marketpulse.market.prices import fetch_prices
     from marketpulse.model.engine import make_decisions, record_outcomes
     from marketpulse.nlp.dedup import cluster_new_articles
     from marketpulse.trading.executor import close_expired_trades, execute_new_decisions
 
-    import os
-
-    from marketpulse.db.session import init_db
-
     init_db()
+    failures = 0  # подряд упавших тиков: после 5 выходим с ошибкой, чтобы эстафета не маскировала поломку
     interval_sec = 15 * 60
     # RUN_MAX_HOURS: в облаке задача живёт < 6 ч и передаёт эстафету следующей
     max_hours = float(os.environ.get("RUN_MAX_HOURS", "0") or 0)
@@ -108,20 +109,28 @@ def cmd_run() -> None:
             c = asyncio.run(collect_once())
             n = cluster_new_articles()
             p = fetch_prices()
+            ins = asyncio.run(fetch_insiders())
+            cp = generate_copy_signals()
             d = make_decisions()
             t1 = execute_new_decisions()
             o = record_outcomes()
             t2 = close_expired_trades()
+            failures = 0
             print(
                 f"[тик] новостей +{c['new_articles']}, событий +{n['new_clusters']}, "
-                f"баров +{p['inserted']}, решений +{d['created']}, "
-                f"сделок +{t1['opened']}/-{t2['closed']}, исходов +{o['recorded']}",
+                f"баров +{p['inserted']}, инсайдеров +{ins['added']}/{cp['created']}, "
+                f"решений +{d['created']}, сделок +{t1['opened']}/-{t2['closed']}, "
+                f"исходов +{o['recorded']}",
                 flush=True,
             )
         except KeyboardInterrupt:
             raise
-        except Exception as exc:  # noqa: BLE001 — цикл не должен умирать
-            print(f"[тик] ошибка: {type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 — один сбой не должен убивать цикл
+            failures += 1
+            print(f"[тик] ошибка ({failures}/5): {type(exc).__name__}: {exc}", flush=True)
+            if failures >= 5:
+                print("[цикл] пять тиков подряд с ошибкой — останавливаюсь", flush=True)
+                sys.exit(1)
         time.sleep(max(0, interval_sec - (time.time() - started)))
 
 

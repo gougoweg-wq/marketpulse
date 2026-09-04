@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from marketpulse.config import settings
 from marketpulse.db.models import (
@@ -33,6 +33,8 @@ log = logging.getLogger("smartmoney")
 # SEC требует представляться контактом в User-Agent
 SEC_HEADERS = {"User-Agent": "MarketPulse research maksim130874@gmail.com"}
 MAX_DOC_FETCHES = 12  # вежливый лимит на один проход
+COPY_MAX_AGE_DAYS = 3  # форма старше — история, а не сигнал
+MARKET_STALE_MIN = 75  # нет бара свежее — рынок закрыт
 
 _TITLE_RE = re.compile(r"^4(?:/A)?\s+-\s+(.+?)\s+\((\d{10})\)\s+\((Issuer|Reporting)\)")
 _XML_LINK_RE = re.compile(r'href="(/Archives/[^"]+\.xml)"', re.I)
@@ -71,19 +73,22 @@ def _parse_form4_xml(raw: bytes) -> dict | None:
 
     symbol = txt(".//issuerTradingSymbol")
     owner = txt(".//rptOwnerName")
-    code = None
-    shares = price = None
-    # берём первую несервисную транзакцию
+    # все транзакции: типичная форма топ-менеджера — M (исполнение опциона по $0)
+    # + S (продажа на рынке); брать первую значит потерять продажу
+    lots: dict[str, list[tuple[float, float]]] = {}
     for tr in root.iter("nonDerivativeTransaction"):
-        code = tr.findtext(".//transactionCode")
+        c = tr.findtext(".//transactionCode")
+        if not c:
+            continue
         sh = tr.findtext(".//transactionShares/value")
         pr = tr.findtext(".//transactionPricePerShare/value")
-        shares = float(sh) if sh else None
-        price = float(pr) if pr else None
-        if code:
-            break
-    if not code:
+        lots.setdefault(c, []).append((float(sh) if sh else 0.0, float(pr) if pr else 0.0))
+    if not lots:
         return None
+    code = "P" if "P" in lots else "S" if "S" in lots else next(iter(lots))
+    shares = sum(sh for sh, _ in lots[code]) or None
+    value = sum(sh * pr for sh, pr in lots[code])
+    price = (value / shares) if shares else None
     return {"symbol": symbol, "insider_name": owner, "transaction_code": code,
             "shares": shares, "price": price}
 
@@ -92,7 +97,7 @@ async def _company_form4(http: aiohttp.ClientSession, symbol: str) -> list[tuple
     """Свежие Form 4 компании: [(accession, href, updated)]. Тикер = CIK-параметр EDGAR."""
     url = (
         "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
-        f"&CIK={symbol}&type=4&dateb=&owner=include&count=10&output=atom"
+        f"&CIK={symbol}&type=4&dateb=&owner=exclude&count=10&output=atom"
     )
     try:
         async with http.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
@@ -107,7 +112,7 @@ async def _company_form4(http: aiohttp.ClientSession, symbol: str) -> list[tuple
         href = re.search(r'href="([^"]+-index\.htm[^"]*)"', entry)
         upd = re.search(r"<updated>(.*?)</updated>", entry)
         ftype = re.search(r"<filing-type>(.*?)</filing-type>", entry)
-        if acc and href and (not ftype or ftype.group(1).startswith("4")):
+        if acc and href and (not ftype or ftype.group(1).strip() == "4"):
             out.append((acc.group(1), href.group(1), upd.group(1) if upd else ""))
     return out
 
@@ -153,9 +158,14 @@ async def fetch_insiders() -> dict:
                 except ValueError:
                     filed_at = datetime.now(timezone.utc)
 
+                stale = (datetime.now(timezone.utc) - filed_at) > timedelta(days=COPY_MAX_AGE_DAYS)
                 with db_session() as s:
+                    if s.execute(select(InsiderFiling.id).where(
+                            InsiderFiling.accession == accession)).scalar():
+                        continue  # гонка с другим процессом — уже есть
                     s.add(InsiderFiling(
                         accession=accession, filed_at=filed_at,
+                        copied=1 if stale else 0,
                         company=(detail or {}).get("symbol") or sym,
                         symbol=sym,
                         insider_name=(detail or {}).get("insider_name"),
@@ -187,13 +197,25 @@ def generate_copy_signals() -> dict:
     Остальные коды (опционы, гранты, налоги) — не сигнал.
     """
     created = 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     with db_session() as s:
+        # при закрытом рынке не создаём: вход был бы по вчерашней цене,
+        # а исход — гарантированный минус на издержки; ждём открытия
+        newest = s.execute(select(func.max(PriceBar.ts))).scalar()
+        if newest is None or now - newest.replace(tzinfo=None) > timedelta(minutes=MARKET_STALE_MIN):
+            return {"created": 0, "market_closed": True}
+
         pending = s.execute(
             select(InsiderFiling).where(
                 InsiderFiling.copied == 0,
                 InsiderFiling.transaction_code.in_(["P", "S"]),
             )
         ).scalars().all()
+        # уже открытые copy-сигналы: несколько инсайдеров в один день — один сигнал
+        open_copy = set(s.execute(
+            select(Decision.symbol, Decision.direction).where(
+                Decision.reason == DecisionReason.copy, Decision.outcome_recorded_at.is_(None))
+        ).all())
 
         for f in pending:
             f.copied = 1
@@ -205,6 +227,10 @@ def generate_copy_signals() -> dict:
             ).scalar()
             if bar is None:
                 continue
+            direction_pre = Direction.long if f.transaction_code == "P" else Direction.short
+            if (f.symbol, direction_pre) in open_copy:
+                continue
+            open_copy.add((f.symbol, direction_pre))
 
             if f.transaction_code == "P":
                 direction = Direction.long

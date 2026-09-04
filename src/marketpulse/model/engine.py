@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
 
 from marketpulse.config import settings
 from marketpulse.db.models import (
@@ -26,28 +26,39 @@ from marketpulse.model.learner import OnlineModel
 
 COST_PER_SIDE = 0.0005
 ROUND_TRIP_COST = COST_PER_SIDE * 2
-FRESH_WINDOW = timedelta(hours=6)   # событие старше — уже не сигнал
+FRESH_WINDOW = timedelta(hours=16)      # событие старше — уже не сигнал (ночь до открытия — 15 ч)
+PUBLISHED_MAX_AGE = timedelta(hours=24)  # по времени публикации: бэклог лент — не новости
+MARKET_STALE = timedelta(minutes=75)     # нет бара свежее — рынок закрыт
+VOID_AFTER = timedelta(days=3)           # решение без цен дольше — аннулируем
 
 
 def _naive(dt: datetime) -> datetime:
     return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
 
-def _price_at(s, symbol: str, when: datetime) -> float | None:
-    """Первый бар ПОСЛЕ момента when — цена, по которой реально можно войти/выйти."""
-    bar = s.execute(
+def _bar_at(s, symbol: str, when: datetime):
+    """Первый бар ПОСЛЕ момента when — по нему реально можно войти/выйти."""
+    return s.execute(
         select(PriceBar).where(PriceBar.symbol == symbol, PriceBar.ts >= _naive(when))
         .order_by(PriceBar.ts.asc()).limit(1)
     ).scalar()
+
+
+def _last_bar(s, symbol: str, when: datetime):
+    """Последний бар ДО момента when."""
+    return s.execute(
+        select(PriceBar).where(PriceBar.symbol == symbol, PriceBar.ts <= _naive(when))
+        .order_by(PriceBar.ts.desc()).limit(1)
+    ).scalar()
+
+
+def _price_at(s, symbol: str, when: datetime) -> float | None:
+    bar = _bar_at(s, symbol, when)
     return bar.close if bar else None
 
 
 def _last_price(s, symbol: str, when: datetime) -> float | None:
-    """Последний бар ДО момента when — текущая известная цена (для размера позиции)."""
-    bar = s.execute(
-        select(PriceBar).where(PriceBar.symbol == symbol, PriceBar.ts <= _naive(when))
-        .order_by(PriceBar.ts.desc()).limit(1)
-    ).scalar()
+    bar = _last_bar(s, symbol, when)
     return bar.close if bar else None
 
 
@@ -63,7 +74,7 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
         newest_bar = s.execute(
             select(PriceBar.ts).order_by(PriceBar.ts.desc()).limit(1)
         ).scalar()
-        if newest_bar is None or _naive(now) - _naive(newest_bar) > timedelta(hours=3):
+        if newest_bar is None or _naive(now) - _naive(newest_bar) > MARKET_STALE:
             return {"created": 0, "market_closed": True}
 
         decided = {
@@ -72,14 +83,23 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
             ).scalars()
         }
         # фильтр по тикерам — в Python: у Postgres нет оператора сравнения для json
-        fresh = [
-            c for c in s.execute(
-                select(NewsCluster).where(
-                    NewsCluster.first_seen_at >= _naive(now - FRESH_WINDOW),
-                )
-            ).scalars()
-            if c.tickers
-        ]
+        window = _naive(now - FRESH_WINDOW)
+        first_published = dict(s.execute(
+            select(Article.cluster_id, func.min(Article.published_at))
+            .join(NewsCluster, NewsCluster.id == Article.cluster_id)
+            .where(NewsCluster.first_seen_at >= window)
+            .group_by(Article.cluster_id)
+        ).all())
+        fresh = []
+        for c in s.execute(
+            select(NewsCluster).where(NewsCluster.first_seen_at >= window)
+        ).scalars():
+            if not c.tickers:
+                continue
+            pub = first_published.get(c.id)
+            if pub is not None and _naive(now) - _naive(pub) > PUBLISHED_MAX_AGE:
+                continue  # старая публикация, только что попавшая в ленту
+            fresh.append(c)
 
         symbols = sorted({sym for c in fresh for sym in (c.tickers or [])})
         ctx = load_feature_context(s, symbols, now) if symbols else None
@@ -126,6 +146,7 @@ def record_outcomes(model: OnlineModel | None = None) -> dict:
     model = model or OnlineModel.load()
     now = datetime.now(timezone.utc)
     recorded = 0
+    voided = 0
 
     with db_session() as s:
         pending = s.execute(
@@ -137,15 +158,29 @@ def record_outcomes(model: OnlineModel | None = None) -> dict:
             if _naive(now) < horizon_end:
                 continue
             # честный вход: первый бар ПОСЛЕ решения (никакого взгляда назад)
-            true_entry = _price_at(s, d.symbol, _naive(d.created_at))
-            exit_price = _price_at(s, d.symbol, horizon_end)
-            if exit_price is None and _naive(now) - horizon_end > timedelta(hours=2):
+            entry_bar = _bar_at(s, d.symbol, _naive(d.created_at))
+            exit_bar = _bar_at(s, d.symbol, horizon_end)
+            if exit_bar is None and _naive(now) - horizon_end > timedelta(hours=2):
                 # горизонт пришёлся на закрытый рынок — выходим по последнему
                 # бару до горизонта (эквивалент выхода по закрытию сессии)
-                exit_price = _last_price(s, d.symbol, horizon_end)
-            if true_entry is None or exit_price is None:
+                exit_bar = _last_bar(s, d.symbol, horizon_end)
+            if entry_bar is None or exit_bar is None:
+                if _naive(now) - horizon_end > VOID_AFTER:
+                    # цен так и не появилось (тикер выбыл) — аннулируем, не держим экспозицию
+                    d.realized_return = 0.0
+                    d.outcome_recorded_at = _naive(now)
+                    voided += 1
                 continue  # цены ещё не подгрузились — попробуем в следующий раз
-            d.entry_price = true_entry
+            if _naive(exit_bar.ts) <= _naive(entry_bar.ts):
+                # вход и выход — один бар: сделки по сути не было, аннулируем без издержек
+                d.entry_price = entry_bar.close
+                d.exit_price = entry_bar.close
+                d.realized_return = 0.0
+                d.outcome_recorded_at = _naive(now)
+                voided += 1
+                continue
+            d.entry_price = entry_bar.close
+            exit_price = exit_bar.close
 
             market_ret = exit_price / d.entry_price - 1
             if d.direction == Direction.long:
@@ -169,14 +204,16 @@ def record_outcomes(model: OnlineModel | None = None) -> dict:
                 model.learn_one(feats, went_up=market_ret > 0)
             recorded += 1
 
-        if recorded:
+        if recorded or voided:
             s.add(LogEntry(
                 component="model",
-                message=f"зафиксировано исходов: {recorded}, модель -> {model.version}",
+                message=f"зафиксировано исходов: {recorded}, аннулировано: {voided}, "
+                        f"модель -> {model.version}",
             ))
+        if recorded:
+            model.save(s)  # в одной транзакции с исходами: либо всё, либо ничего
 
-    model.save()
-    return {"recorded": recorded}
+    return {"recorded": recorded, "voided": voided}
 
 
 def replay_history() -> dict:

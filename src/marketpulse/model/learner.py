@@ -43,43 +43,43 @@ class OnlineModel:
 
     @classmethod
     def load(cls) -> "OnlineModel":
-        # приоритет — БД: единственное хранилище, живущее в облаке между запусками
+        """Веса из БД (таблица гарантирована init_db). Сбой базы — исключение,
+        а не тихая пустая модель, которая затёрла бы обученную при save()."""
         from marketpulse.db.models import ModelBlob
         from marketpulse.db.session import db_session
 
-        from sqlalchemy.exc import OperationalError, ProgrammingError
-
-        try:
-            with db_session() as s:
-                blob = s.get(ModelBlob, 1)
-                if blob is not None:
-                    return pickle.loads(blob.data)
-        except (OperationalError, ProgrammingError) as exc:
-            # только "таблицы ещё нет" — любой другой сбой базы должен уронить тик,
-            # иначе свежая пустая модель затрёт обученную при следующем save()
-            if "model_blob" not in str(exc):
-                raise
+        with db_session() as s:
+            blob = s.get(ModelBlob, 1)
+            if blob is not None:
+                return pickle.loads(blob.data)
         if MODEL_PATH.exists():
             with open(MODEL_PATH, "rb") as f:
                 return pickle.load(f)
         return cls()
 
-    def save(self) -> None:
+    def save(self, session=None) -> None:
+        """Пишет веса в БД. С переданной сессией — в её транзакции (атомарно с исходами)."""
         from datetime import datetime, timezone
 
         from marketpulse.db.models import ModelBlob
         from marketpulse.db.session import db_session
 
         payload = pickle.dumps(self)
-        with db_session() as s:
+
+        def _write(s):
             blob = s.get(ModelBlob, 1)
             if blob is None:
-                blob = ModelBlob(id=1, data=payload, version=self.version)
-                s.add(blob)
+                s.add(ModelBlob(id=1, data=payload, version=self.version))
             else:
                 blob.data = payload
                 blob.version = self.version
                 blob.updated_at = datetime.now(timezone.utc)
+
+        if session is not None:
+            _write(session)
+        else:
+            with db_session() as s:
+                _write(s)
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(MODEL_PATH, "wb") as f:
             pickle.dump(self, f)
