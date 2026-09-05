@@ -180,6 +180,52 @@ def cmd_tick() -> None:
     )
 
 
+
+def cmd_manual() -> None:
+    """Ручная сделка на демо-счёте: manual SYMBOL long|short [часы=24] [сумма=5% капитала]."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from marketpulse.db.models import Decision, DecisionReason, Direction, LogEntry, PriceBar, Trade, TradeStatus
+    from marketpulse.db.session import db_session, init_db
+    from marketpulse.trading.executor import _alpaca_client, _submit_alpaca, account_equity
+
+    args = sys.argv[2:]
+    if len(args) < 2 or args[1] not in ("long", "short"):
+        print("Использование: manual SYMBOL long|short [часы] [сумма$]")
+        sys.exit(1)
+    symbol, direction = args[0].upper(), Direction(args[1])
+    hours = int(args[2]) if len(args) > 2 else 24
+    init_db()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with db_session() as s:
+        bar = s.execute(select(PriceBar).where(PriceBar.symbol == symbol)
+                        .order_by(PriceBar.ts.desc()).limit(1)).scalar()
+        if bar is None:
+            print(f"нет котировок по {symbol} — тикер не в вотчлисте?")
+            sys.exit(1)
+        notional = float(args[3]) if len(args) > 3 else account_equity(s) * settings.max_position_pct
+        d = Decision(symbol=symbol, direction=direction, reason=DecisionReason.manual,
+                     confidence=0.99, features={"by": "user"}, model_version="manual",
+                     horizon_hours=hours, entry_price=bar.close, created_at=now)
+        s.add(d)
+        s.flush()
+        t = Trade(decision_id=d.id, symbol=symbol, direction=direction, qty=notional / bar.close,
+                  notional=notional, status=TradeStatus.filled, submitted_at=now, filled_at=now,
+                  fill_price=bar.close)
+        client = _alpaca_client()
+        broker_note = "симулятор (ключей брокера нет)"
+        if client is not None:
+            order_id, err = _submit_alpaca(client, t)
+            t.broker_order_id = order_id
+            broker_note = f"Alpaca ордер {order_id}" if order_id else f"брокер отклонил: {err}"
+        s.add(t)
+        s.add(LogEntry(component="trading",
+                       message=f"ручная сделка: {direction.value} {symbol} ${notional:,.0f} на {hours}ч — {broker_note}"))
+    print(f"{direction.value.upper()} {symbol} ${notional:,.0f}, горизонт {hours}ч, вход по {bar.close:.2f} — {broker_note}")
+
+
 COMMANDS = {
     "init": cmd_init,
     "collect": cmd_collect,
@@ -191,6 +237,7 @@ COMMANDS = {
     "trade": cmd_trade,
     "run": cmd_run,
     "tick": cmd_tick,
+    "manual": cmd_manual,
 }
 
 

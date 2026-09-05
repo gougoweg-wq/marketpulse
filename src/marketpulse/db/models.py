@@ -146,6 +146,7 @@ class DecisionReason(str, enum.Enum):
     exploration = "exploration" # исследовательская сделка (случайная)
     contrarian = "contrarian"   # контрарианский сигнал против толпы
     copy = "copy"               # копирование сделки инсайдера (Form 4)
+    manual = "manual"           # ручная сделка пользователя (сравнение «человек vs модель»)
 
 
 class Decision(Base):
