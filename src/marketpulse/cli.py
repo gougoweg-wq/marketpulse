@@ -187,6 +187,7 @@ def cmd_manual() -> None:
 
     from sqlalchemy import select
 
+    from marketpulse.config import settings
     from marketpulse.db.models import Decision, DecisionReason, Direction, LogEntry, PriceBar, Trade, TradeStatus
     from marketpulse.db.session import db_session, init_db
     from marketpulse.trading.executor import _alpaca_client, _submit_alpaca, account_equity
