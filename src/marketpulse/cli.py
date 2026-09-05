@@ -218,6 +218,17 @@ def cmd_manual() -> None:
         client = _alpaca_client()
         broker_note = "симулятор (ключей брокера нет)"
         if client is not None:
+            # рынок закрыт: «на N часов» считаем от ближайшего открытия, иначе выходные
+            # съедят горизонт, и вход с выходом придутся на один бар (сделка аннулируется)
+            try:
+                clk = client.get_clock()
+                if not clk.is_open:
+                    from datetime import timedelta
+                    nxt = clk.next_open.astimezone(timezone.utc).replace(tzinfo=None)
+                    d.horizon_hours = int((nxt + timedelta(hours=hours) - now).total_seconds() // 3600)
+                    hours = d.horizon_hours
+            except Exception:  # noqa: BLE001
+                pass
             order_id, err = _submit_alpaca(client, t)
             t.broker_order_id = order_id
             broker_note = f"Alpaca ордер {order_id}" if order_id else f"брокер отклонил: {err}"
