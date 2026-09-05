@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, insert, select
 
+from marketpulse.assets import is_crypto
 from marketpulse.config import settings
 from marketpulse.db.models import (
     Article, Decision, DecisionReason, Direction, LogEntry, NewsCluster, PriceBar,
@@ -71,11 +72,11 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
     with db_session() as s:
         # рынок закрыт (нет свежих баров) — решений не принимаем: цена входа
         # была бы вчерашней, а исход — фиктивным нулём с издержками
-        newest_bar = s.execute(
-            select(PriceBar.ts).order_by(PriceBar.ts.desc()).limit(1)
+        # часы торгов есть только у акций: крипта решается всегда
+        newest_equity = s.execute(
+            select(func.max(PriceBar.ts)).where(PriceBar.symbol.in_(settings.watchlist))
         ).scalar()
-        if newest_bar is None or _naive(now) - _naive(newest_bar) > MARKET_STALE:
-            return {"created": 0, "market_closed": True}
+        equity_open = newest_equity is not None and _naive(now) - _naive(newest_equity) <= MARKET_STALE
 
         decided = {
             (d.cluster_id, d.symbol) for d in s.execute(
@@ -109,6 +110,8 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
             for sym in cluster.tickers or []:
                 if (cluster.id, sym) in decided:
                     continue
+                if not is_crypto(sym) and not equity_open:
+                    continue  # акции при закрытом рынке: вход был бы по вчерашней цене
                 feats = build_features(cluster, sym, now, ctx)
                 if feats is None:
                     continue

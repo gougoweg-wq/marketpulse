@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
+from marketpulse.assets import alpaca_symbol, is_crypto, normalize_symbol
 from marketpulse.config import settings
 from marketpulse.db.models import (
     Decision, DecisionReason, Direction, LogEntry, PriceBar, Trade, TradeStatus,
@@ -64,7 +65,9 @@ def _market_open(s, client) -> bool:
             return bool(client.get_clock().is_open)
         except Exception:
             pass
-    newest = s.execute(select(func.max(PriceBar.ts))).scalar()
+    newest = s.execute(
+        select(func.max(PriceBar.ts)).where(PriceBar.symbol.in_(settings.watchlist))
+    ).scalar()
     if newest is None:
         return False
     newest = newest.replace(tzinfo=None)
@@ -77,15 +80,20 @@ def _submit_alpaca(client, trade: Trade) -> tuple[str | None, str | None]:
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
 
+        crypto = is_crypto(trade.symbol)
+        tif = TimeInForce.GTC if crypto else TimeInForce.DAY  # крипта у Alpaca: только GTC/IOC
+        sym = alpaca_symbol(trade.symbol)
         if trade.direction == Direction.long:
-            req = MarketOrderRequest(symbol=trade.symbol, notional=round(trade.notional, 2),
-                                     side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+            req = MarketOrderRequest(symbol=sym, notional=round(trade.notional, 2),
+                                     side=OrderSide.BUY, time_in_force=tif)
         else:
+            if crypto:
+                return None, "шорт крипты у брокера недоступен — только симулятор"
             qty = int(trade.notional / trade.fill_price)
             if qty < 1:
                 return None, "шорт меньше одной акции — только симулятор"
-            req = MarketOrderRequest(symbol=trade.symbol, qty=qty,
-                                     side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
+            req = MarketOrderRequest(symbol=sym, qty=qty,
+                                     side=OrderSide.SELL, time_in_force=tif)
         order = client.submit_order(req)
         return str(order.id), None
     except Exception as exc:  # noqa: BLE001 — ошибка брокера не должна валить тик
@@ -98,15 +106,18 @@ def _close_alpaca(client, trade: Trade) -> str | None:
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
 
+        crypto = is_crypto(trade.symbol)
+        tif = TimeInForce.GTC if crypto else TimeInForce.DAY
+        sym = alpaca_symbol(trade.symbol)
         if trade.direction == Direction.long:
-            req = MarketOrderRequest(symbol=trade.symbol, notional=round(trade.notional, 2),
-                                     side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
+            req = MarketOrderRequest(symbol=sym, notional=round(trade.notional, 2),
+                                     side=OrderSide.SELL, time_in_force=tif)
         else:
             qty = int(trade.notional / trade.fill_price)
             if qty < 1:
                 return None
-            req = MarketOrderRequest(symbol=trade.symbol, qty=qty,
-                                     side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+            req = MarketOrderRequest(symbol=sym, qty=qty,
+                                     side=OrderSide.BUY, time_in_force=tif)
         return str(client.submit_order(req).id)
     except Exception:  # noqa: BLE001
         return None
@@ -129,8 +140,7 @@ def execute_new_decisions() -> dict:
 
     # ---------- фаза 1: зафиксировать сделки в базе ----------
     with db_session() as s:
-        if not _market_open(s, alpaca):
-            return {"opened": 0, "skipped_risk": 0, "market_closed": True}
+        equity_open = _market_open(s, alpaca)  # часы торгов — только для акций
 
         equity = account_equity(s)
         exposure = open_exposure(s)
@@ -155,6 +165,8 @@ def execute_new_decisions() -> dict:
         for d in pending:
             if d.id in traded:
                 continue
+            if not is_crypto(d.symbol) and not equity_open:
+                continue  # акции ждут открытия; крипта идёт 24/7
             base = equity * settings.max_position_pct
             conf_frac = min(1.0, max(0.2, (d.confidence - 0.5) / 0.15))
             notional = base * conf_frac
@@ -254,12 +266,12 @@ def _reconcile_broker(s, client) -> list[str]:
         positions = client.get_all_positions()
     except Exception:  # noqa: BLE001
         return []
-    open_symbols = set(s.execute(
+    open_symbols = {normalize_symbol(x) for x in s.execute(
         select(Trade.symbol).where(Trade.status.in_([TradeStatus.filled, TradeStatus.submitted]))
-    ).scalars())
+    ).scalars()}
     closed: list[str] = []
     for p in positions:
-        if p.symbol in open_symbols:
+        if normalize_symbol(p.symbol) in open_symbols:
             continue
         try:
             client.close_position(p.symbol)

@@ -37,7 +37,7 @@ def _upsert_stmt():
 
 
 def fetch_prices(symbols: list[str] | None = None) -> dict:
-    symbols = symbols or settings.watchlist
+    symbols = symbols or (list(settings.watchlist) + list(settings.crypto_watchlist))
     interval = settings.price_bar_interval
     failed: list[str] = []
 

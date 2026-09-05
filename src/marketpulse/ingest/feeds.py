@@ -39,6 +39,7 @@ TICKER_QUERY = {
     "QQQ": "Nasdaq 100", "IWM": "Russell 2000", "TLT": "treasury bonds",
     "GDX": "gold miners", "PPLT": "platinum price", "CPER": "copper price",
     "UNG": "natural gas price", "URA": "uranium stocks", "DBA": "agriculture commodities",
+    "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum", "SOL-USD": "Solana",
 }
 
 STATIC_RSS: list[tuple[str, str, str, float]] = [
@@ -155,7 +156,7 @@ def build_catalog() -> list[FeedSpec]:
         specs.append(FeedSpec(SourceKind.rss, name, url, cat, w))
 
     # --- персональные ленты на каждый тикер ---
-    for sym in settings.watchlist:
+    for sym in list(settings.watchlist) + list(settings.crypto_watchlist):
         query = TICKER_QUERY.get(sym, sym)
         q = query.replace(" ", "+")
         specs.append(FeedSpec(

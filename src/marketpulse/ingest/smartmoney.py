@@ -201,7 +201,7 @@ def generate_copy_signals() -> dict:
     with db_session() as s:
         # при закрытом рынке не создаём: вход был бы по вчерашней цене,
         # а исход — гарантированный минус на издержки; ждём открытия
-        newest = s.execute(select(func.max(PriceBar.ts))).scalar()
+        newest = s.execute(select(func.max(PriceBar.ts)).where(PriceBar.symbol.in_(settings.watchlist))).scalar()
         if newest is None or now - newest.replace(tzinfo=None) > timedelta(minutes=MARKET_STALE_MIN):
             return {"created": 0, "market_closed": True}
 

@@ -213,12 +213,12 @@ def watchlist():
         by_sym: dict[str, list] = {}
         for b in s.execute(
             select(PriceBar).where(
-                PriceBar.symbol.in_(settings.watchlist),
+                PriceBar.symbol.in_(list(settings.watchlist) + list(settings.crypto_watchlist)),
                 PriceBar.ts >= now - timedelta(days=5),
             ).order_by(PriceBar.ts.asc())
         ).scalars():
             by_sym.setdefault(b.symbol, []).append(b)
-        for sym in settings.watchlist:
+        for sym in list(settings.watchlist) + list(settings.crypto_watchlist):
             bars = by_sym.get(sym)
             if not bars:
                 continue

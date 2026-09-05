@@ -191,8 +191,7 @@ def test_executor_skips_when_market_closed(monkeypatch):
             confidence=0.8, features={k: 0.0 for k in FEATURE_ORDER},
             horizon_hours=4, created_at=now, entry_price=50.0,
         ))
-    r = executor.execute_new_decisions()
-    assert r.get("market_closed") is True
+    executor.execute_new_decisions()
     with db_session() as s:
         assert s.query(Trade).filter_by(symbol="CLSD").count() == 0
 
@@ -242,3 +241,38 @@ def test_tickers_ignore_homonyms():
     assert "JNJ" in extract_tickers("Johnson & Johnson settles talc lawsuit")
     assert "GLD" not in extract_tickers("She won a gold medal in Paris")
     assert "GLD" in extract_tickers("Gold prices hit record high")
+
+
+def test_asset_classes_and_broker_symbols():
+    from marketpulse.assets import alpaca_symbol, is_crypto, normalize_symbol
+    assert is_crypto("BTC-USD") and not is_crypto("AAPL")
+    assert alpaca_symbol("BTC-USD") == "BTC/USD" and alpaca_symbol("AAPL") == "AAPL"
+    # позиции брокера приходят как BTCUSD — сверка должна их узнавать
+    assert normalize_symbol("BTCUSD") == normalize_symbol("BTC/USD") == normalize_symbol("BTC-USD")
+
+
+def test_crypto_tickers_only_by_name():
+    assert "BTC-USD" in extract_tickers("Bitcoin jumps above $120,000 as ETF inflows surge")
+    assert "ETH-USD" in extract_tickers("Ethereum upgrade goes live")
+    assert "SOL-USD" not in extract_tickers("The sol de Mayo appears on the flag")
+
+
+def test_crypto_trades_when_equity_market_closed(monkeypatch):
+    """Крипта торгуется 24/7: при закрытом рынке акций её сделки открываются, акции — нет."""
+    from marketpulse.trading import executor
+    from marketpulse.db.models import Trade, TradeStatus
+
+    monkeypatch.setattr(executor, "_alpaca_client", lambda: None)
+    monkeypatch.setattr(executor, "_market_open", lambda s, c: False)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with db_session() as s:
+        for sym in ("BTC-USD", "MSFT"):
+            s.add(Decision(
+                symbol=sym, direction=Direction.long, reason=DecisionReason.model,
+                confidence=0.8, features={k: 0.0 for k in FEATURE_ORDER},
+                horizon_hours=4, created_at=now, entry_price=100.0,
+            ))
+    executor.execute_new_decisions()
+    with db_session() as s:
+        assert s.query(Trade).filter_by(symbol="BTC-USD", status=TradeStatus.filled).count() == 1
+        assert s.query(Trade).filter_by(symbol="MSFT").count() == 0

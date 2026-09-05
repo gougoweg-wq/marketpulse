@@ -34,6 +34,8 @@ class Settings(BaseSettings):
         # сырьё и металлы (ETF): золотодобытчики, платина, медь, газ, уран, агро
         "GDX", "PPLT", "CPER", "UNG", "URA", "DBA",
     ]
+    # крипта: торгуется 24/7, у брокера — только лонг (шорт крипты Alpaca не даёт)
+    crypto_watchlist: list[str] = ["BTC-USD", "ETH-USD", "SOL-USD"]
     price_bar_interval: str = "1h"       # интервал баров для обучения
 
     # --- модель ---

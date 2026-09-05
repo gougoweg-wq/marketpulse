@@ -42,6 +42,9 @@ _CONTEXT_PATTERNS: dict[str, str] = {
     "UNG": r"\bnatural gas (?:price|prices|futures|market)|\bnat[- ]gas\b|\bLNG\b",
     "URA": r"\buranium\b|\bnuclear (?:power|energy|fuel)\b",
     "DBA": r"\b(?:wheat|corn|soybean|cattle|sugar|coffee) (?:price|prices|futures)",
+    "BTC-USD": r"\bBitcoin\b|\bBTC\b",
+    "ETH-USD": r"\bEthereum\b|\bEther\b|\bETH\b",
+    "SOL-USD": r"\bSolana\b",
 }
 _NAME_PATTERNS: list[tuple[re.Pattern, str]] = []
 for sym, name in TICKER_QUERY.items():
@@ -55,7 +58,7 @@ for sym, name in TICKER_QUERY.items():
 
 
 def extract_tickers(text: str) -> list[str]:
-    watch = set(settings.watchlist)
+    watch = set(settings.watchlist) | set(settings.crypto_watchlist)
     found: set[str] = set()
 
     for m in _DOLLAR_RE.finditer(text):
@@ -67,6 +70,8 @@ def extract_tickers(text: str) -> list[str]:
 
     # голое упоминание тикера словом — только для «безопасных»
     for sym in watch - AMBIGUOUS - found:
+        if "-" in sym:
+            continue  # крипта — только по названию (Bitcoin, Ethereum...)
         if re.search(rf"\b{sym}\b", text):
             found.add(sym)
 
