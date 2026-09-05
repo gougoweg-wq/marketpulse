@@ -36,6 +36,12 @@ _CONTEXT_PATTERNS: dict[str, str] = {
     "DIS": r"\bDisney\b",
     "BA": r"\bBoeing\b",
     "GS": r"Goldman Sachs",
+    "GDX": r"\bgold miners?\b|\bgold mining\b|\bNewmont\b|\bBarrick\b",
+    "PPLT": r"\bplatinum (?:price|prices|futures|market)",
+    "CPER": r"\bcopper (?:price|prices|futures|market|demand)",
+    "UNG": r"\bnatural gas (?:price|prices|futures|market)|\bnat[- ]gas\b|\bLNG\b",
+    "URA": r"\buranium\b|\bnuclear (?:power|energy|fuel)\b",
+    "DBA": r"\b(?:wheat|corn|soybean|cattle|sugar|coffee) (?:price|prices|futures)",
 }
 _NAME_PATTERNS: list[tuple[re.Pattern, str]] = []
 for sym, name in TICKER_QUERY.items():

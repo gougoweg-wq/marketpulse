@@ -31,6 +31,8 @@ class Settings(BaseSettings):
         "AMD", "INTC", "NFLX", "JPM", "GS", "XOM", "CVX", "KO",
         "PFE", "JNJ", "BA", "DIS", "V", "MA", "PYPL", "COIN",
         "GLD", "SLV", "USO", "SPY", "QQQ", "IWM", "TLT",
+        # сырьё и металлы (ETF): золотодобытчики, платина, медь, газ, уран, агро
+        "GDX", "PPLT", "CPER", "UNG", "URA", "DBA",
     ]
     price_bar_interval: str = "1h"       # интервал баров для обучения
 

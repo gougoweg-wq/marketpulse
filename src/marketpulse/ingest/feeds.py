@@ -37,6 +37,8 @@ TICKER_QUERY = {
     "MA": "Mastercard", "PYPL": "PayPal", "COIN": "Coinbase", "GLD": "gold price",
     "SLV": "silver price", "USO": "oil price", "SPY": "S&P 500",
     "QQQ": "Nasdaq 100", "IWM": "Russell 2000", "TLT": "treasury bonds",
+    "GDX": "gold miners", "PPLT": "platinum price", "CPER": "copper price",
+    "UNG": "natural gas price", "URA": "uranium stocks", "DBA": "agriculture commodities",
 }
 
 STATIC_RSS: list[tuple[str, str, str, float]] = [
