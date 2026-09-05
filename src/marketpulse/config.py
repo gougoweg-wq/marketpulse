@@ -39,7 +39,12 @@ class Settings(BaseSettings):
     price_bar_interval: str = "1h"       # интервал баров для обучения
 
     # --- модель ---
-    prediction_horizon_hours: int = 4    # на сколько вперёд предсказываем
+    prediction_horizon_hours: int = 4    # плечо A: горизонт предсказания
+    # A/B-эксперимент: плечо B — длинный горизонт и только сильные сигналы.
+    # Решения делятся по чётности id события (50/50, воспроизводимо).
+    ab_enabled: bool = True
+    ab_b_horizon_hours: int = 24
+    ab_b_min_confidence: float = 0.62
     exploration_rate: float = 0.10       # доля исследовательских решений
     retrain_every_hours: int = 24
 

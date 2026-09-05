@@ -107,7 +107,7 @@
   .dir{font-weight:600;font-size:.84rem}
   .dir.long{color:var(--green)}.dir.short{color:var(--red)}.dir.flat{color:var(--text-3)}
   .why{font-size:.8rem}
-  .why.model{color:var(--blue)}.why.exploration{color:var(--violet)}
+  .why.model,.why.model_A,.why.model_B{color:var(--blue)}.why.exploration{color:var(--violet)}
   .why.contrarian{color:var(--amber)}.why.copy{color:var(--acc)}.why.manual{color:#e2a1ff}
 
   /* фильтры */
@@ -447,7 +447,7 @@ $("#equity").addEventListener("mouseleave",()=>$("#tooltip").style.display="none
 
 const sent=v=>v==null?"":`<span class="m ${v>0.05?"up":v<-0.05?"dn":""}" style="font-size:.76rem">${v>0?"+":""}${v.toFixed(2)}</span>`;
 const dirCell=d=>`<span class="dir ${d}">${d==="long"?"▲ Long":d==="short"?"▼ Short":"—"}</span>`;
-const REASON_RU={model:"модель",exploration:"исслед.",contrarian:"контрариан",copy:"копитрейд",manual:"вручную"};
+const REASON_RU={model:"модель",model_A:"A · 4ч",model_B:"B · 24ч сильные",exploration:"исслед.",contrarian:"контрариан",copy:"копитрейд",manual:"вручную"};
 
 /* ---- события ---- */
 let evFilter=new URLSearchParams(location.search).get("f")||"important";

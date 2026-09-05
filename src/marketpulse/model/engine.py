@@ -65,7 +65,9 @@ def _last_price(s, symbol: str, when: datetime) -> float | None:
 
 def make_decisions(model: OnlineModel | None = None) -> dict:
     """Решения по свежим событиям, у которых их ещё нет."""
-    model = model or OnlineModel.load()
+    models = {"A": model or OnlineModel.load("A")}
+    if settings.ab_enabled:
+        models["B"] = OnlineModel.load("B")
     now = datetime.now(timezone.utc)
     created = 0
 
@@ -115,7 +117,16 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
                 feats = build_features(cluster, sym, now, ctx)
                 if feats is None:
                     continue
-                direction, conf, reason = model.decide(feats)
+                # A/B: плечо по чётности id события — 50/50 и воспроизводимо
+                arm = "B" if settings.ab_enabled and cluster.id % 2 == 1 else "A"
+                arm_model = models[arm]
+                if arm == "B":
+                    direction, conf, reason = arm_model.decide(feats, settings.ab_b_min_confidence)
+                    horizon = settings.ab_b_horizon_hours
+                else:
+                    direction, conf, reason = arm_model.decide(feats)
+                    horizon = settings.prediction_horizon_hours
+                feats = {**feats, "arm": arm}
                 # последняя известная цена — только для размера позиции;
                 # честная цена входа фиксируется в record_outcomes первым баром ПОСЛЕ решения
                 bars = ctx["bars"].get(sym) if ctx else None
@@ -123,8 +134,8 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
                 rows.append(dict(
                     cluster_id=cluster.id, symbol=sym, direction=direction,
                     reason=reason, confidence=conf, features=feats,
-                    model_version=model.version,
-                    horizon_hours=settings.prediction_horizon_hours,
+                    model_version=arm_model.version,
+                    horizon_hours=horizon,
                     entry_price=entry, created_at=_naive(now),
                 ))
                 created += 1
@@ -134,7 +145,8 @@ def make_decisions(model: OnlineModel | None = None) -> dict:
         if created:
             s.add(LogEntry(
                 component="model",
-                message=f"принято решений: {created} (модель {model.version})",
+                message=f"принято решений: {created} (A {models['A'].version}"
+                        + (f", B {models['B'].version}" if "B" in models else "") + ")",
             ))
     return {"created": created}
 
@@ -146,7 +158,10 @@ def record_outcomes(model: OnlineModel | None = None) -> dict:
     на ВСЕХ решениях, включая flat: модель предсказывает рынок, а не
     собственную награду.
     """
-    model = model or OnlineModel.load()
+    models = {"A": model or OnlineModel.load("A")}
+    if settings.ab_enabled:
+        models["B"] = OnlineModel.load("B")
+    learned = {"A": 0, "B": 0}
     now = datetime.now(timezone.utc)
     recorded = 0
     voided = 0
@@ -231,17 +246,21 @@ def record_outcomes(model: OnlineModel | None = None) -> dict:
                 and d.reason != DecisionReason.copy
                 and all(k in feats for k in FEATURE_ORDER)
             ):
-                model.learn_one(feats, went_up=market_ret > 0)
+                arm = feats.get("arm", "A") if feats.get("arm", "A") in models else "A"
+                models[arm].learn_one(feats, went_up=market_ret > 0)
+                learned[arm] += 1
             recorded += 1
 
         if recorded or voided:
             s.add(LogEntry(
                 component="model",
                 message=f"зафиксировано исходов: {recorded}, аннулировано: {voided}, "
-                        f"модель -> {model.version}",
+                        f"A -> {models['A'].version} (+{learned['A']})"
+                        + (f", B -> {models['B'].version} (+{learned['B']})" if "B" in models else ""),
             ))
-        if recorded:
-            model.save(s)  # в одной транзакции с исходами: либо всё, либо ничего
+        for arm, m in models.items():
+            if learned[arm]:
+                m.save(s)  # в одной транзакции с исходами: либо всё, либо ничего
 
     return {"recorded": recorded, "voided": voided}
 

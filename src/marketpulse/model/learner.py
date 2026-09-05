@@ -41,21 +41,38 @@ class OnlineModel:
 
     # --- persist ---
 
+    ARM_BLOB = {"A": 1, "B": 2}
+
     @classmethod
-    def load(cls) -> "OnlineModel":
-        """Веса из БД (таблица гарантирована init_db). Сбой базы — исключение,
-        а не тихая пустая модель, которая затёрла бы обученную при save()."""
+    def load(cls, arm: str = "A") -> "OnlineModel":
+        """Веса плеча из БД (таблица гарантирована init_db). Сбой базы — исключение,
+        а не тихая пустая модель, которая затёрла бы обученную при save().
+        Плечо B, если ещё не существует, стартует копией весов A."""
         from marketpulse.db.models import ModelBlob
         from marketpulse.db.session import db_session
 
+        blob_id = cls.ARM_BLOB[arm]
         with db_session() as s:
-            blob = s.get(ModelBlob, 1)
+            blob = s.get(ModelBlob, blob_id)
             if blob is not None:
-                return pickle.loads(blob.data)
-        if MODEL_PATH.exists():
+                m = pickle.loads(blob.data)
+                m.arm = arm
+                return m
+            if arm != "A":
+                base = s.get(ModelBlob, 1)
+                if base is not None:
+                    m = pickle.loads(base.data)
+                    m.arm = arm
+                    m.version = f"B-{m.version}"
+                    return m
+        if MODEL_PATH.exists() and arm == "A":
             with open(MODEL_PATH, "rb") as f:
-                return pickle.load(f)
-        return cls()
+                m = pickle.load(f)
+                m.arm = "A"
+                return m
+        m = cls()
+        m.arm = arm
+        return m
 
     def save(self, session=None) -> None:
         """Пишет веса в БД. С переданной сессией — в её транзакции (атомарно с исходами)."""
@@ -65,11 +82,12 @@ class OnlineModel:
         from marketpulse.db.session import db_session
 
         payload = pickle.dumps(self)
+        blob_id = self.ARM_BLOB[getattr(self, "arm", "A")]
 
         def _write(s):
-            blob = s.get(ModelBlob, 1)
+            blob = s.get(ModelBlob, blob_id)
             if blob is None:
-                s.add(ModelBlob(id=1, data=payload, version=self.version))
+                s.add(ModelBlob(id=blob_id, data=payload, version=self.version))
             else:
                 blob.data = payload
                 blob.version = self.version
@@ -80,9 +98,10 @@ class OnlineModel:
         else:
             with db_session() as s:
                 _write(s)
-        MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(MODEL_PATH, "wb") as f:
-            pickle.dump(self, f)
+        if getattr(self, "arm", "A") == "A":
+            MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(MODEL_PATH, "wb") as f:
+                pickle.dump(self, f)
 
     # --- learn ---
 
@@ -91,7 +110,7 @@ class OnlineModel:
         y = np.array([1 if went_up else 0])
         self.clf.partial_fit(x, y, classes=np.array([0, 1]))
         self.n_seen += 1
-        self.version = f"v1.{self.n_seen}"
+        self.version = ("B-" if getattr(self, "arm", "A") == "B" else "") + f"v1.{self.n_seen}"
 
     # --- decide ---
 
@@ -101,15 +120,16 @@ class OnlineModel:
         x = np.array([to_vector(features)])
         return float(self.clf.predict_proba(x)[0, 1])
 
-    def decide(self, features: dict) -> tuple[Direction, float, DecisionReason]:
-        """(направление, уверенность, причина)."""
+    def decide(self, features: dict, min_confidence: float | None = None) -> tuple[Direction, float, DecisionReason]:
+        """(направление, уверенность, причина). min_confidence — порог плеча."""
+        min_conf = min_confidence or settings.min_confidence
         # исследовательская сделка: случайное направление, малый размер
         if random.random() < settings.exploration_rate:
             d = random.choice([Direction.long, Direction.short])
             return d, 0.5, DecisionReason.exploration
 
         p_up = self.predict_up_proba(features)
-        edge = settings.min_confidence - 0.5
+        edge = min_conf - 0.5
 
         # контрарианский слой: толпа на экстремуме, модель без сильного мнения
         if (
@@ -122,8 +142,8 @@ class OnlineModel:
             conf = 0.5 + min(abs(crowd), 0.9) * edge  # уверенность от силы экстремума
             return d, conf, DecisionReason.contrarian
 
-        if p_up >= settings.min_confidence:
+        if p_up >= min_conf:
             return Direction.long, p_up, DecisionReason.model
-        if p_up <= 1 - settings.min_confidence:
+        if p_up <= 1 - min_conf:
             return Direction.short, 1 - p_up, DecisionReason.model
         return Direction.flat, max(p_up, 1 - p_up), DecisionReason.model

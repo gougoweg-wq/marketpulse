@@ -247,6 +247,26 @@ def strategies():
     """Внутренний лидерборд: какая стратегия зарабатывает."""
     out = []
     with db_session() as s:
+        # A/B-плечи модели
+        for arm, label in (("A", "model_A"), ("B", "model_B")):
+            arm_filter = Decision.features["arm"].as_string() == arm
+            rows = s.execute(
+                select(Decision.realized_return).where(
+                    Decision.reason == DecisionReason.model, arm_filter,
+                    Decision.realized_return.isnot(None), Decision.realized_return != 0,
+                    Decision.direction != Direction.flat,
+                )
+            ).scalars().all()
+            n_open = s.execute(select(func.count(Decision.id)).where(
+                Decision.reason == DecisionReason.model, arm_filter,
+                Decision.outcome_recorded_at.is_(None), Decision.direction != Direction.flat,
+            )).scalar()
+            wins = sum(1 for r in rows if r > 0)
+            out.append({
+                "reason": label, "closed": len(rows), "open": n_open,
+                "hit_rate": wins / len(rows) if rows else None,
+                "avg_return": sum(rows) / len(rows) if rows else None,
+            })
         for reason in DecisionReason:
             rows = s.execute(
                 select(Decision.realized_return).where(
