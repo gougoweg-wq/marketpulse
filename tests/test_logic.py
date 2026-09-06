@@ -276,3 +276,12 @@ def test_crypto_trades_when_equity_market_closed(monkeypatch):
     with db_session() as s:
         assert s.query(Trade).filter_by(symbol="BTC-USD", status=TradeStatus.filled).count() == 1
         assert s.query(Trade).filter_by(symbol="MSFT").count() == 0
+
+
+def test_position_size_tiers_follow_confidence():
+    from marketpulse.trading.executor import position_fraction
+    assert position_fraction(0.55) == 0.05
+    assert position_fraction(0.61) == 0.12
+    assert position_fraction(0.66) == 0.25
+    assert position_fraction(0.75) == 0.40
+    assert position_fraction(0.99) == 0.40

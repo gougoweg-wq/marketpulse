@@ -30,6 +30,19 @@ DECISION_MAX_AGE = timedelta(minutes=20)   # решение старше одн�
 MARKET_STALE = timedelta(minutes=75)       # нет бара свежее — рынок закрыт
 
 
+def position_fraction(confidence: float) -> float:
+    """Доля капитала на сделку по ступеням уверенности (см. settings.size_tiers)."""
+    edge = confidence - 0.5
+    for min_edge, fraction in sorted(settings.size_tiers, key=lambda t: -t[0]):
+        if edge >= min_edge:
+            return fraction
+    return settings.size_tiers[-1][1]
+
+
+def max_symbol_fraction() -> float:
+    return max(f for _, f in settings.size_tiers)
+
+
 def account_equity(s) -> float:
     """Текущий капитал симулятора = старт + сумма PnL закрытых сделок."""
     pnl = s.execute(
@@ -167,17 +180,14 @@ def execute_new_decisions() -> dict:
                 continue
             if not is_crypto(d.symbol) and not equity_open:
                 continue  # акции ждут открытия; крипта идёт 24/7
-            base = equity * settings.max_position_pct
-            # круче по уверенности: слабый сигнал — четверть, сильный (edge >= 0.15) — полный размер
-            conf_frac = min(1.0, max(0.25, ((d.confidence - 0.5) / 0.15) ** 2))
-            notional = base * conf_frac
+            notional = equity * position_fraction(d.confidence)
             if d.reason == DecisionReason.exploration:
                 notional *= 0.25
             if exposure + notional > equity * settings.max_gross_exposure:
                 skipped_risk += 1
                 continue
-            # не более 2× размера позиции в одном тикере
-            if symbol_exposure.get(d.symbol, 0.0) + notional > equity * settings.max_position_pct * 2:
+            # лимит концентрации: не больше самой крупной ступени в одном тикере
+            if symbol_exposure.get(d.symbol, 0.0) + notional > equity * max_symbol_fraction():
                 skipped_risk += 1
                 continue
             symbol_exposure[d.symbol] = symbol_exposure.get(d.symbol, 0.0) + notional

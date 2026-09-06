@@ -49,7 +49,15 @@ class Settings(BaseSettings):
     retrain_every_hours: int = 24
 
     # --- риск ---
-    max_position_pct: float = 0.12       # агрессивный профиль: до 12% счёта на позицию
+    max_position_pct: float = 0.12       # базовый размер (средняя уверенность)
+    # ступени размера по уверенности: (минимальный край conf-0.5, доля капитала).
+    # Сильная уверенность — большая ставка, слабая — обычная.
+    size_tiers: list[tuple[float, float]] = [
+        (0.20, 0.40),   # conf >= 0.70: 40% счёта
+        (0.15, 0.25),   # conf >= 0.65: 25%
+        (0.10, 0.12),   # conf >= 0.60: 12%
+        (0.00, 0.05),   # слабее: 5%, как обычно
+    ]
     max_gross_exposure: float = 2.0      # плечо 2x — предел удержания через ночь у Alpaca
     min_confidence: float = 0.58         # ниже — не торгуем
     stop_loss_pct: float = 0.03
