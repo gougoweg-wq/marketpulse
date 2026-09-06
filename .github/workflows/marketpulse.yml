@@ -40,6 +40,8 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          BINANCE_TESTNET_API_KEY: ${{ secrets.BINANCE_TESTNET_API_KEY }}
+          BINANCE_TESTNET_API_SECRET: ${{ secrets.BINANCE_TESTNET_API_SECRET }}
           PYTHONPATH: src
           PYTHONUNBUFFERED: "1"
           RUN_MAX_HOURS: ${{ github.event.inputs.hours || '5.6' }}
