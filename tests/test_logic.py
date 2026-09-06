@@ -171,8 +171,8 @@ def test_executor_caps_concentration_per_symbol(monkeypatch):
     with db_session() as s:
         opened = s.query(Trade).filter_by(symbol="CONC", status=TradeStatus.filled).all()
         total = sum(t.notional for t in opened)
-    # лимит: 2 × max_position_pct от капитала
-    assert total <= executor.STARTING_EQUITY * settings.max_position_pct * 2 + 1e-6
+    # лимит концентрации: не больше самой крупной ступени размера в одном тикере
+    assert total <= executor.STARTING_EQUITY * executor.max_symbol_fraction() + 1e-6
     assert len(opened) < 3
 
 
