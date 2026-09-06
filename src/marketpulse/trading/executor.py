@@ -168,7 +168,8 @@ def execute_new_decisions() -> dict:
             if not is_crypto(d.symbol) and not equity_open:
                 continue  # акции ждут открытия; крипта идёт 24/7
             base = equity * settings.max_position_pct
-            conf_frac = min(1.0, max(0.2, (d.confidence - 0.5) / 0.15))
+            # круче по уверенности: слабый сигнал — четверть, сильный (edge >= 0.15) — полный размер
+            conf_frac = min(1.0, max(0.25, ((d.confidence - 0.5) / 0.15) ** 2))
             notional = base * conf_frac
             if d.reason == DecisionReason.exploration:
                 notional *= 0.25

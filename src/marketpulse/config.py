@@ -49,8 +49,8 @@ class Settings(BaseSettings):
     retrain_every_hours: int = 24
 
     # --- риск ---
-    max_position_pct: float = 0.05       # максимум 5% счёта на позицию
-    max_gross_exposure: float = 1.0      # суммарная экспозиция не выше 100%
+    max_position_pct: float = 0.12       # агрессивный профиль: до 12% счёта на позицию
+    max_gross_exposure: float = 2.0      # плечо 2x — предел удержания через ночь у Alpaca
     min_confidence: float = 0.58         # ниже — не торгуем
     stop_loss_pct: float = 0.03
 
