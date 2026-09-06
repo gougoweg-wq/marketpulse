@@ -68,6 +68,10 @@ class Settings(BaseSettings):
 
     # --- Alpaca paper ---
     alpaca_api_key: str = ""
+    # Binance Futures Testnet: крипта с плечом и шортами на демо-деньгах
+    binance_testnet_api_key: str = ""
+    binance_testnet_api_secret: str = ""
+    crypto_leverage: int = 20            # плечо на крипто-позицию у Binance (1..125)
     alpaca_secret_key: str = ""
     alpaca_paper: bool = True            # только демо-счёт, реальная торговля выключена
 

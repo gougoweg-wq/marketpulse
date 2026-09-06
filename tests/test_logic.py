@@ -285,3 +285,10 @@ def test_position_size_tiers_follow_confidence():
     assert position_fraction(0.66) == 0.25
     assert position_fraction(0.75) == 0.40
     assert position_fraction(0.99) == 0.40
+
+
+def test_binance_symbol_mapping_and_no_client_without_keys():
+    from marketpulse.trading import binance_futures
+    assert binance_futures.binance_symbol("BTC-USD") == "BTC/USDT:USDT"
+    assert binance_futures.binance_symbol("AAPL") is None
+    assert binance_futures.client() is None  # без ключей коннектор молчит

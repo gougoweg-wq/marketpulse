@@ -194,7 +194,7 @@ def cmd_manual() -> None:
 
     args = sys.argv[2:]
     if len(args) < 2 or args[1] not in ("long", "short"):
-        print("Использование: manual SYMBOL long|short [часы] [сумма$]")
+        print("Использование: manual SYMBOL long|short [часы] [сумма$] [плечо для крипты]")
         sys.exit(1)
     symbol, direction = args[0].upper(), Direction(args[1])
     hours = int(args[2]) if len(args) > 2 else 24
@@ -215,9 +215,19 @@ def cmd_manual() -> None:
         t = Trade(decision_id=d.id, symbol=symbol, direction=direction, qty=notional / bar.close,
                   notional=notional, status=TradeStatus.filled, submitted_at=now, filled_at=now,
                   fill_price=bar.close)
+        from marketpulse.assets import is_crypto
+        from marketpulse.trading import binance_futures
+
         client = _alpaca_client()
         broker_note = "симулятор (ключей брокера нет)"
-        if client is not None:
+        leverage = int(args[4]) if len(args) > 4 else settings.crypto_leverage
+        bx = binance_futures.client() if is_crypto(symbol) else None
+        if bx is not None:
+            order_id, err = binance_futures.open_position(bx, symbol, direction.value, notional, leverage)
+            t.broker_order_id = order_id
+            broker_note = (f"Binance testnet ордер {order_id}, плечо {leverage}x, маржа ${notional/leverage:,.0f}"
+                           if order_id else f"Binance отклонил: {err}")
+        elif client is not None:
             # рынок закрыт: «на N часов» считаем от ближайшего открытия, иначе выходные
             # съедят горизонт, и вход с выходом придутся на один бар (сделка аннулируется)
             try:

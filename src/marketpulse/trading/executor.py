@@ -24,6 +24,7 @@ from marketpulse.db.models import (
     Decision, DecisionReason, Direction, LogEntry, PriceBar, Trade, TradeStatus,
 )
 from marketpulse.db.session import db_session, engine
+from marketpulse.trading import binance_futures
 
 STARTING_EQUITY = 100_000.0
 DECISION_MAX_AGE = timedelta(minutes=20)   # решение старше одного тика не исполняем
@@ -206,8 +207,15 @@ def execute_new_decisions() -> dict:
             select(Trade).where(Trade.status == TradeStatus.submitted)
         ).scalars().all()
         errors: list[str] = []
+        binance = binance_futures.client()
         for t in submitted:
-            if alpaca is not None:
+            if is_crypto(t.symbol) and binance is not None:
+                order_id, err = binance_futures.open_position(
+                    binance, t.symbol, t.direction.value, t.notional, settings.crypto_leverage)
+                t.broker_order_id = order_id
+                if err:
+                    errors.append(f"{t.symbol}: {err}")
+            elif alpaca is not None:
                 order_id, err = _submit_alpaca(alpaca, t)
                 t.broker_order_id = order_id
                 if err:
@@ -249,7 +257,11 @@ def close_expired_trades() -> dict:
             t.pnl = t.notional * d.realized_return
             total_pnl += t.pnl
             closed += 1
-            if alpaca is not None and t.broker_order_id:
+            if t.broker_order_id and str(t.broker_order_id).startswith("binance:"):
+                bx = binance_futures.client()
+                if bx is not None:
+                    binance_futures.close_position(bx, t.symbol, t.direction.value, t.notional)
+            elif alpaca is not None and t.broker_order_id:
                 _close_alpaca(alpaca, t)  # позиция у брокера не должна жить вечно
 
         if closed:
@@ -261,7 +273,7 @@ def close_expired_trades() -> dict:
 
         # сверка с брокером: позиция, у которой нет открытой сделки в базе, —
         # сирота (осталась от сбоя или старой версии), закрываем целиком
-        orphans = _reconcile_broker(s, alpaca)
+        orphans = _reconcile_broker(s, alpaca) + _reconcile_binance(s)
         if orphans:
             s.add(LogEntry(
                 component="trading", level="warn",
@@ -289,4 +301,20 @@ def _reconcile_broker(s, client) -> list[str]:
             closed.append(p.symbol)
         except Exception:  # noqa: BLE001
             continue
+    return closed
+
+
+def _reconcile_binance(s) -> list[str]:
+    bx = binance_futures.client()
+    if bx is None:
+        return []
+    open_symbols = set(s.execute(
+        select(Trade.symbol).where(Trade.status.in_([TradeStatus.filled, TradeStatus.submitted]))
+    ).scalars())
+    closed: list[str] = []
+    for sym, _size in binance_futures.positions(bx):
+        if sym in open_symbols:
+            continue
+        if binance_futures.close_all(bx, sym):
+            closed.append(f"{sym}@binance")
     return closed

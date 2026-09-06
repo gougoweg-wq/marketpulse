@@ -28,3 +28,4 @@ uvicorn[standard]>=0.30
 # Dev
 pytest>=8.0
 psycopg[binary]>=3.2
+ccxt>=4.4
