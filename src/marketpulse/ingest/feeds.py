@@ -41,6 +41,8 @@ TICKER_QUERY = {
     "UNG": "natural gas price", "URA": "uranium stocks", "DBA": "agriculture commodities",
     "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum", "SOL-USD": "Solana",
     "TSM": "TSMC", "AVGO": "Broadcom", "MRVL": "Marvell", "QCOM": "Qualcomm", "MU": "Micron",
+    "LMT": "Lockheed Martin", "RTX": "Raytheon", "NOC": "Northrop Grumman",
+    "GD": "General Dynamics", "LHX": "L3Harris", "PLTR": "Palantir",
 }
 
 STATIC_RSS: list[tuple[str, str, str, float]] = [

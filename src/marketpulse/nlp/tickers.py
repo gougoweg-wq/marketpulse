@@ -50,6 +50,12 @@ _CONTEXT_PATTERNS: dict[str, str] = {
     "MRVL": r"\bMarvell\b",
     "QCOM": r"\bQualcomm\b",
     "MU": r"\bMicron(?: Technology)?\b",
+    "LMT": r"\bLockheed\b",
+    "RTX": r"\bRaytheon\b|\bRTX Corp",
+    "NOC": r"\bNorthrop\b",
+    "GD": r"General Dynamics",
+    "LHX": r"\bL3Harris\b",
+    "PLTR": r"\bPalantir\b",
 }
 _NAME_PATTERNS: list[tuple[re.Pattern, str]] = []
 for sym, name in TICKER_QUERY.items():

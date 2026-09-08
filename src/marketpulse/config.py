@@ -36,6 +36,9 @@ class Settings(BaseSettings):
         # цепочка поставок чипов: TSMC (Apple, Nvidia, Amazon), Broadcom, Marvell (Trainium),
         # Qualcomm (сделка с Amazon), Micron (память)
         "TSM", "AVGO", "MRVL", "QCOM", "MU",
+        # оборонка: Lockheed (F-35, ракеты), RTX (Patriot, Tomahawk), Northrop, General Dynamics,
+        # L3Harris, Palantir (военный ИИ)
+        "LMT", "RTX", "NOC", "GD", "LHX", "PLTR",
     ]
     # крипта: торгуется 24/7, у брокера — только лонг (шорт крипты Alpaca не даёт)
     crypto_watchlist: list[str] = ["BTC-USD", "ETH-USD", "SOL-USD"]
