@@ -108,7 +108,17 @@ def _submit_alpaca(client, trade: Trade) -> tuple[str | None, str | None]:
                 return None, "шорт меньше одной акции — только симулятор"
             req = MarketOrderRequest(symbol=sym, qty=qty,
                                      side=OrderSide.SELL, time_in_force=tif)
-        order = client.submit_order(req)
+        try:
+            order = client.submit_order(req)
+        except Exception as exc:  # noqa: BLE001
+            # 40310000: у брокера открыта позиция в ПРОТИВОПОЛОЖНУЮ сторону — Alpaca не
+            # переворачивает одним ордером. Закрываем её и повторяем.
+            if "40310000" not in str(exc):
+                raise
+            import time
+            client.close_position(sym)
+            time.sleep(2)
+            order = client.submit_order(req)
         return str(order.id), None
     except Exception as exc:  # noqa: BLE001 — ошибка брокера не должна валить тик
         return None, f"{type(exc).__name__}: {str(exc)[:160]}"
