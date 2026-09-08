@@ -45,6 +45,11 @@ _CONTEXT_PATTERNS: dict[str, str] = {
     "BTC-USD": r"\bBitcoin\b|\bBTC\b",
     "ETH-USD": r"\bEthereum\b|\bEther\b|\bETH\b",
     "SOL-USD": r"\bSolana\b",
+    "TSM": r"\bTSMC\b|Taiwan Semiconductor",
+    "AVGO": r"\bBroadcom\b",
+    "MRVL": r"\bMarvell\b",
+    "QCOM": r"\bQualcomm\b",
+    "MU": r"\bMicron(?: Technology)?\b",
 }
 _NAME_PATTERNS: list[tuple[re.Pattern, str]] = []
 for sym, name in TICKER_QUERY.items():
