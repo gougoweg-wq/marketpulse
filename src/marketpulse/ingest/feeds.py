@@ -43,7 +43,7 @@ TICKER_QUERY = {
     "TSM": "TSMC", "AVGO": "Broadcom", "MRVL": "Marvell", "QCOM": "Qualcomm", "MU": "Micron",
     "LMT": "Lockheed Martin", "RTX": "Raytheon", "NOC": "Northrop Grumman",
     "GD": "General Dynamics", "LHX": "L3Harris", "PLTR": "Palantir",
-    "AVAV": "AeroVironment", "KTOS": "Kratos Defense",
+    "AVAV": "AeroVironment", "KTOS": "Kratos Defense", "UPS": "United Parcel Service",
 }
 
 STATIC_RSS: list[tuple[str, str, str, float]] = [

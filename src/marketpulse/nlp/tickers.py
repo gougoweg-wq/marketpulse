@@ -58,6 +58,7 @@ _CONTEXT_PATTERNS: dict[str, str] = {
     "PLTR": r"\bPalantir\b",
     "AVAV": r"\bAeroVironment\b",
     "KTOS": r"\bKratos\b",
+    "UPS": r"United Parcel|\bUPS (?:stock|shares|earnings|Inc|drivers|deliver)",  # «ups and downs» — не тикер
 }
 _NAME_PATTERNS: list[tuple[re.Pattern, str]] = []
 for sym, name in TICKER_QUERY.items():

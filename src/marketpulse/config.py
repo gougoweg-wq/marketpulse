@@ -40,6 +40,7 @@ class Settings(BaseSettings):
         # L3Harris, Palantir (военный ИИ)
         "LMT", "RTX", "NOC", "GD", "LHX", "PLTR",
         "AVAV", "KTOS",  # дроны: Switchblade, Kratos
+        "UPS",           # логистика
     ]
     # крипта: торгуется 24/7, у брокера — только лонг (шорт крипты Alpaca не даёт)
     crypto_watchlist: list[str] = ["BTC-USD", "ETH-USD", "SOL-USD"]
