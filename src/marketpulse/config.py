@@ -39,6 +39,7 @@ class Settings(BaseSettings):
         # оборонка: Lockheed (F-35, ракеты), RTX (Patriot, Tomahawk), Northrop, General Dynamics,
         # L3Harris, Palantir (военный ИИ)
         "LMT", "RTX", "NOC", "GD", "LHX", "PLTR",
+        "AVAV", "KTOS",  # дроны: Switchblade, Kratos
     ]
     # крипта: торгуется 24/7, у брокера — только лонг (шорт крипты Alpaca не даёт)
     crypto_watchlist: list[str] = ["BTC-USD", "ETH-USD", "SOL-USD"]
