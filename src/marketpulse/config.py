@@ -67,6 +67,10 @@ class Settings(BaseSettings):
         (0.00, 0.05),   # слабее: 5%, как обычно
     ]
     max_gross_exposure: float = 2.0      # плечо 2x — предел удержания через ночь у Alpaca
+    # сильный сигнал модели важнее ручных ставок: при нехватке места модель закрывает
+    # ручные позиции (с мелких), чтобы освободить экспозицию под сделку с уверенностью >= порога
+    model_priority_over_manual: bool = True
+    model_priority_min_confidence: float = 0.65
     min_confidence: float = 0.58         # ниже — не торгуем
     stop_loss_pct: float = 0.03
 

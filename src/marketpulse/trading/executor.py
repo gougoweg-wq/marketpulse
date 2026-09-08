@@ -195,8 +195,16 @@ def execute_new_decisions() -> dict:
             if d.reason == DecisionReason.exploration:
                 notional *= 0.25
             if exposure + notional > equity * settings.max_gross_exposure:
-                skipped_risk += 1
-                continue
+                freed = 0.0
+                if (settings.model_priority_over_manual
+                        and d.reason != DecisionReason.manual
+                        and d.confidence >= settings.model_priority_min_confidence):
+                    need = exposure + notional - equity * settings.max_gross_exposure
+                    freed = _free_exposure_from_manual(s, need, alpaca, now)
+                    exposure -= freed
+                if exposure + notional > equity * settings.max_gross_exposure:
+                    skipped_risk += 1
+                    continue
             # лимит концентрации: не больше самой крупной ступени в одном тикере
             if symbol_exposure.get(d.symbol, 0.0) + notional > equity * max_symbol_fraction():
                 skipped_risk += 1
@@ -328,3 +336,49 @@ def _reconcile_binance(s) -> list[str]:
         if binance_futures.close_all(bx, sym):
             closed.append(f"{sym}@binance")
     return closed
+
+
+def _free_exposure_from_manual(s, need: float, client, now: datetime) -> float:
+    """Закрывает ручные позиции (с самых мелких), пока не освободится need долларов.
+
+    Исход фиксируется честно: выход по последней известной цене, издержки учтены,
+    лидерборд «вручную» получает результат, а не пропуск.
+    """
+    from marketpulse.model.engine import ROUND_TRIP_COST
+
+    freed = 0.0
+    closed_syms: list[str] = []
+    manual = s.execute(
+        select(Trade, Decision).join(Decision, Decision.id == Trade.decision_id)
+        .where(Trade.status == TradeStatus.filled, Decision.reason == DecisionReason.manual)
+        .order_by(Trade.notional.asc())
+    ).all()
+    for t, d in manual:
+        if freed >= need:
+            break
+        last = s.execute(
+            select(PriceBar.close).where(PriceBar.symbol == t.symbol)
+            .order_by(PriceBar.ts.desc()).limit(1)
+        ).scalar()
+        if last is None or d.entry_price is None:
+            continue
+        market_ret = last / d.entry_price - 1
+        realized = (market_ret if t.direction == Direction.long else -market_ret) - ROUND_TRIP_COST
+        d.exit_price = last
+        d.realized_return = realized
+        d.outcome_recorded_at = now
+        t.status = TradeStatus.closed
+        t.closed_at = now
+        t.close_price = last
+        t.pnl = t.notional * realized
+        if client is not None and t.broker_order_id:
+            _close_alpaca(client, t)
+        freed += t.notional
+        closed_syms.append(f"{t.symbol} ${t.notional:,.0f} ({realized*100:+.2f}%)")
+    if closed_syms:
+        s.add(LogEntry(
+            component="trading", level="warn",
+            message=f"приоритет модели: закрыты ручные позиции на ${freed:,.0f} под сильный сигнал — "
+                    + ", ".join(closed_syms),
+        ))
+    return freed

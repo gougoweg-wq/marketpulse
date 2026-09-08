@@ -292,3 +292,39 @@ def test_binance_symbol_mapping_and_no_client_without_keys():
     assert binance_futures.binance_symbol("BTC-USD") == "BTC/USDT:USDT"
     assert binance_futures.binance_symbol("AAPL") is None
     assert binance_futures.client() is None  # без ключей коннектор молчит
+
+
+def test_strong_model_signal_trims_manual_positions(monkeypatch):
+    """Сильный сигнал при полной экспозиции закрывает ручные позиции (с мелких) и проходит."""
+    from marketpulse.trading import executor
+    from marketpulse.db.models import Trade, TradeStatus
+
+    monkeypatch.setattr(executor, "_alpaca_client", lambda: None)
+    monkeypatch.setattr(executor, "_market_open", lambda s, c: True)
+    monkeypatch.setattr(settings, "max_gross_exposure", 0.30)  # тесная экспозиция: 30% капитала
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with db_session() as s:
+        # чистый стол: позиции из других тестов не должны занимать экспозицию
+        for t in s.query(Trade).filter_by(status=TradeStatus.filled).all():
+            t.status = TradeStatus.closed
+            t.pnl = 0.0
+        _seed_bars(s, "MANL", now - timedelta(hours=2), [100.0, 101.0])
+        _seed_bars(s, "STRG", now - timedelta(hours=2), [50.0, 50.0])
+        # две ручные позиции занимают всю экспозицию: $20k + $10k
+        for notional in (20_000.0, 10_000.0):
+            d = Decision(symbol="MANL", direction=Direction.long, reason=DecisionReason.manual,
+                         confidence=0.99, features={"by": "user"}, horizon_hours=48,
+                         created_at=now - timedelta(hours=1), entry_price=100.0)
+            s.add(d); s.flush()
+            s.add(Trade(decision_id=d.id, symbol="MANL", direction=Direction.long,
+                        qty=notional / 100, notional=notional, status=TradeStatus.filled,
+                        submitted_at=now, filled_at=now, fill_price=100.0))
+        # сильный сигнал модели (0.75 -> ступень 40% = $40k... при экспозиции 30% = $30k)
+        s.add(Decision(symbol="STRG", direction=Direction.long, reason=DecisionReason.model,
+                       confidence=0.66, features={k: 0.0 for k in FEATURE_ORDER},
+                       horizon_hours=4, created_at=now, entry_price=50.0))
+    executor.execute_new_decisions()
+    with db_session() as s:
+        assert s.query(Trade).filter_by(symbol="STRG", status=TradeStatus.filled).count() == 1
+        closed = s.query(Trade).filter_by(symbol="MANL", status=TradeStatus.closed).all()
+        assert closed and closed[0].pnl is not None  # мелкая ручная закрыта с честным исходом
