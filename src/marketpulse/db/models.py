@@ -270,3 +270,14 @@ class ModelBlob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     version: Mapped[str] = mapped_column(String(50), default="v0")
     data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class QueueItem(Base):
+    """Исполненные команды из очереди репозитория (queue/manual.txt) — защита от повторов."""
+
+    __tablename__ = "queue_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(300), unique=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    result: Mapped[str] = mapped_column(String(300), default="")

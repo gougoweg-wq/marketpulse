@@ -134,7 +134,14 @@ def _close_alpaca(client, trade: Trade) -> str | None:
         tif = TimeInForce.GTC if crypto else TimeInForce.DAY
         sym = alpaca_symbol(trade.symbol)
         if trade.direction == Direction.long:
-            req = MarketOrderRequest(symbol=sym, notional=round(trade.notional, 2),
+            # продаём по количеству: продажа «на сумму» отклоняется, если позиция подешевела
+            qty = trade.qty
+            try:
+                pos = client.get_open_position(sym.replace("/", ""))
+                qty = min(float(pos.qty), trade.qty)
+            except Exception:  # noqa: BLE001
+                pass
+            req = MarketOrderRequest(symbol=sym, qty=round(qty, 6),
                                      side=OrderSide.SELL, time_in_force=tif)
         else:
             qty = int(trade.notional / trade.fill_price)
@@ -196,10 +203,18 @@ def execute_new_decisions() -> dict:
                 notional *= 0.25
             if exposure + notional > equity * settings.max_gross_exposure:
                 freed = 0.0
+                manual_exposure = float(s.execute(
+                    select(func.coalesce(func.sum(Trade.notional), 0.0))
+                    .join(Decision, Decision.id == Trade.decision_id)
+                    .where(Trade.status == TradeStatus.filled, Decision.reason == DecisionReason.manual)
+                ).scalar() or 0.0)
                 if (settings.model_priority_over_manual
                         and d.reason != DecisionReason.manual
-                        and d.confidence >= settings.model_priority_min_confidence):
-                    need = exposure + notional - equity * settings.max_gross_exposure
+                        and d.confidence >= settings.model_priority_min_confidence
+                        # ручные ставки сами по себе не должны превышать лимит — иначе
+                        # «освободить место» превращается в «продать всё»
+                        and manual_exposure <= equity * settings.max_gross_exposure * 0.5):
+                    need = min(notional, exposure + notional - equity * settings.max_gross_exposure)
                     freed = _free_exposure_from_manual(s, need, alpaca, now)
                     exposure -= freed
                 if exposure + notional > equity * settings.max_gross_exposure:

@@ -17,7 +17,7 @@ on:
 
 permissions:
   actions: write   # чтобы задача могла запустить следующую себя
-  contents: read
+  contents: write  # ветка state с базой
 
 # одна активная задача; новая ждёт в очереди, а не дублирует торговлю
 concurrency:
@@ -35,9 +35,12 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
+      - name: Pull state (SQLite from branch `state`)
+        run: sh scripts/state_sync.sh pull
       - name: Run pipeline
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: sqlite:///data/marketpulse.db   # состояние живёт в ветке state
+          STATE_SYNC: "1"
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           BINANCE_TESTNET_API_KEY: ${{ secrets.BINANCE_TESTNET_API_KEY }}
@@ -46,6 +49,9 @@ jobs:
           PYTHONUNBUFFERED: "1"
           RUN_MAX_HOURS: ${{ github.event.inputs.hours || '5.6' }}
         run: python -m marketpulse.cli ${{ github.event.inputs.step || 'run' }}
+      - name: Push state (always, even after a failure)
+        if: always()
+        run: sh scripts/state_sync.sh push || true
       - name: Pass the baton (start next run)
         if: success() && (github.event.inputs.step == 'run' || github.event_name == 'schedule')
         env:

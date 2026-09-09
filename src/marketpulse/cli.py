@@ -78,6 +78,63 @@ def cmd_trade() -> None:
     )
 
 
+def _process_manual_queue() -> int:
+    """Исполняет новые строки queue/manual.txt (из origin/main): «SYMBOL long|short [часы] [сумма] [плечо]»."""
+    import subprocess
+    from sqlalchemy import select
+
+    from marketpulse.db.models import QueueItem
+    from marketpulse.db.session import db_session
+
+    try:
+        subprocess.run(["git", "fetch", "-q", "origin", "main"], check=True, timeout=60)
+        raw = subprocess.run(["git", "show", "origin/main:queue/manual.txt"],
+                             capture_output=True, text=True, timeout=30).stdout
+    except Exception:  # noqa: BLE001 — локальный запуск без remote
+        try:
+            raw = open("queue/manual.txt", encoding="utf-8").read()
+        except OSError:
+            return 0
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip() and not ln.startswith("#")]
+    done = 0
+    with db_session() as s:
+        seen = set(s.execute(select(QueueItem.key)).scalars())
+    for ln in lines:
+        if ln in seen:
+            continue
+        parts = ln.split()
+        args = parts[1:] if len(parts) > 2 and parts[0][:8].isdigit() else parts  # первый токен — метка времени
+        result = "ok"
+        try:
+            saved = sys.argv
+            sys.argv = ["cli", "manual", *args]
+            cmd_manual()
+        except SystemExit:
+            result = "bad args"
+        except Exception as exc:  # noqa: BLE001
+            result = f"{type(exc).__name__}: {str(exc)[:120]}"
+        finally:
+            sys.argv = saved
+        with db_session() as s:
+            s.add(QueueItem(key=ln, result=result))
+        print(f"[очередь] {ln} -> {result}", flush=True)
+        done += 1
+    return done
+
+
+def _sync_state(action: str) -> None:
+    """Состояние (SQLite) живёт в ветке state репозитория; включается STATE_SYNC=1."""
+    import os
+    import subprocess
+
+    if os.environ.get("STATE_SYNC") != "1":
+        return
+    try:
+        subprocess.run(["sh", "scripts/state_sync.sh", action], check=True, timeout=300)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[state] {action} не удался: {type(exc).__name__}: {exc}", flush=True)
+
+
 def cmd_run() -> None:
     """Основной цикл: сбор -> NLP -> цены -> решения -> сделки -> исходы."""
     import time
@@ -93,6 +150,8 @@ def cmd_run() -> None:
     from marketpulse.trading.executor import close_expired_trades, execute_new_decisions
 
     init_db()
+    from marketpulse.ingest.feeds import seed_sources
+    seed_sources()
     failures = 0  # подряд упавших тиков: после 5 выходим с ошибкой, чтобы эстафета не маскировала поломку
     interval_sec = 15 * 60
     # RUN_MAX_HOURS: в облаке задача живёт < 6 ч и передаёт эстафету следующей
@@ -106,6 +165,7 @@ def cmd_run() -> None:
             break
         started = time.time()
         try:
+            q = _process_manual_queue()
             c = asyncio.run(collect_once())
             n = cluster_new_articles()
             p = fetch_prices()
@@ -116,11 +176,12 @@ def cmd_run() -> None:
             o = record_outcomes()
             t2 = close_expired_trades()
             failures = 0
+            _sync_state("push")  # состояние — в репозиторий после каждого тика
             print(
                 f"[тик] новостей +{c['new_articles']}, событий +{n['new_clusters']}, "
                 f"баров +{p['inserted']}, инсайдеров +{ins['added']}/{cp['created']}, "
                 f"решений +{d['created']}, сделок +{t1['opened']}/-{t2['closed']}, "
-                f"исходов +{o['recorded']}",
+                f"исходов +{o['recorded']}" + (f", очередь {q}" if q else ""),
                 flush=True,
             )
         except KeyboardInterrupt:

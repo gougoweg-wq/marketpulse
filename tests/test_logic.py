@@ -301,7 +301,7 @@ def test_strong_model_signal_trims_manual_positions(monkeypatch):
 
     monkeypatch.setattr(executor, "_alpaca_client", lambda: None)
     monkeypatch.setattr(executor, "_market_open", lambda s, c: True)
-    monkeypatch.setattr(settings, "max_gross_exposure", 0.30)  # тесная экспозиция: 30% капитала
+    monkeypatch.setattr(settings, "max_gross_exposure", 0.60)  # лимит 60%: ручные $30k = половина, место под сильную сделку есть
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with db_session() as s:
         # чистый стол: позиции из других тестов не должны занимать экспозицию
@@ -319,9 +319,9 @@ def test_strong_model_signal_trims_manual_positions(monkeypatch):
             s.add(Trade(decision_id=d.id, symbol="MANL", direction=Direction.long,
                         qty=notional / 100, notional=notional, status=TradeStatus.filled,
                         submitted_at=now, filled_at=now, fill_price=100.0))
-        # сильный сигнал модели (0.75 -> ступень 40% = $40k... при экспозиции 30% = $30k)
+        # сильный сигнал модели: 0.66 -> ступень 25% = $25k; экспозиция $30k + $25k > $60k -> нужно ~$-5k... освобождается мелкая ручная
         s.add(Decision(symbol="STRG", direction=Direction.long, reason=DecisionReason.model,
-                       confidence=0.66, features={k: 0.0 for k in FEATURE_ORDER},
+                       confidence=0.75, features={k: 0.0 for k in FEATURE_ORDER},
                        horizon_hours=4, created_at=now, entry_price=50.0))
     executor.execute_new_decisions()
     with db_session() as s:
