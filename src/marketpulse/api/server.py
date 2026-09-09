@@ -23,6 +23,32 @@ from marketpulse.model.features import clean_text
 from marketpulse.trading.executor import STARTING_EQUITY, account_equity, open_exposure
 
 app = FastAPI(title="MarketPulse")
+
+# кэш ответов: база — удалённая, каждый запрос стоит трафика (бесплатный тариф лимитирован)
+_CACHE: dict[str, tuple[float, object]] = {}
+CACHE_TTL = 30.0
+
+
+def _cache_route(route: str):
+    """Декоратор: ответ ручки кэшируется на CACHE_TTL секунд (ключ — маршрут + аргументы)."""
+    import functools
+
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = route + repr(sorted(kwargs.items()))
+            return cached(key, lambda: fn(*args, **kwargs))
+        return wrapper
+    return deco
+
+
+def cached(key: str, fn):
+    hit = _CACHE.get(key)
+    if hit and time.time() - hit[0] < CACHE_TTL:
+        return hit[1]
+    val = fn()
+    _CACHE[key] = (time.time(), val)
+    return val
 DASHBOARD = Path(__file__).resolve().parents[3] / "dashboard" / "index.html"
 
 # Торговые шаги из дашборда разрешены только на локальной SQLite: против облачной
@@ -168,6 +194,7 @@ def index():
 
 
 @app.get("/api/summary")
+@_cache_route("/api/summary")
 def summary():
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with db_session() as s:
@@ -205,6 +232,7 @@ def summary():
 
 
 @app.get("/api/watchlist")
+@_cache_route("/api/watchlist")
 def watchlist():
     """Тикер-лента: последняя цена и изменение за 24ч."""
     out = []
@@ -230,6 +258,7 @@ def watchlist():
 
 
 @app.get("/api/equity")
+@_cache_route("/api/equity")
 def equity_curve():
     points = [{"ts": None, "equity": STARTING_EQUITY}]
     eq = STARTING_EQUITY
@@ -243,6 +272,7 @@ def equity_curve():
 
 
 @app.get("/api/strategies")
+@_cache_route("/api/strategies")
 def strategies():
     """Внутренний лидерборд: какая стратегия зарабатывает."""
     out = []
@@ -288,6 +318,7 @@ def strategies():
 
 
 @app.get("/api/decisions")
+@_cache_route("/api/decisions")
 def decisions(limit: int = 60):
     from bisect import bisect_right
 
@@ -335,6 +366,7 @@ def decisions(limit: int = 60):
 
 
 @app.get("/api/events")
+@_cache_route("/api/events")
 def events(filter: str = "important", limit: int = 40):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with db_session() as s:
@@ -381,6 +413,7 @@ def events(filter: str = "important", limit: int = 40):
 
 
 @app.get("/api/insiders")
+@_cache_route("/api/insiders")
 def insiders(limit: int = 30):
     with db_session() as s:
         rows = s.execute(
@@ -396,6 +429,7 @@ def insiders(limit: int = 30):
 
 
 @app.get("/api/trades")
+@_cache_route("/api/trades")
 def trades(limit: int = 60):
     with db_session() as s:
         pairs = s.execute(
@@ -417,6 +451,7 @@ def trades(limit: int = 60):
 
 
 @app.get("/api/logs")
+@_cache_route("/api/logs")
 def logs(limit: int = 120):
     with db_session() as s:
         rows = s.execute(select(LogEntry).order_by(LogEntry.id.desc()).limit(limit)).scalars().all()
@@ -427,6 +462,7 @@ def logs(limit: int = 120):
 
 
 @app.get("/api/sources")
+@_cache_route("/api/sources")
 def sources():
     with db_session() as s:
         rows = s.execute(select(Source)).scalars().all()

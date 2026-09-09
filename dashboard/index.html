@@ -459,7 +459,7 @@ $("#ev-filters").querySelectorAll(".f").forEach(b=>b.onclick=()=>{
 (()=>{const c=document.querySelector(`#ev-filters [data-f="${evFilter}"]`);
 if(c){document.querySelectorAll("#ev-filters .f").forEach(x=>x.classList.remove("on"));c.classList.add("on")}})();
 async function loadEvents(){
-  const ev=await j("/api/events?filter="+evFilter+"&limit=18");
+  const ev=await j("/api/events?filter="+evFilter+"&limit=14");
   $("#events").innerHTML=ev.length?ev.map(c=>{
     const col=c.sentiment>0.05?"var(--green)":c.sentiment<-0.05?"var(--red)":"var(--line-2)";
     return`<div class="ev"><div class="stripe" style="background:${col}"></div><div style="flex:1;min-width:0">
@@ -479,7 +479,7 @@ async function refresh(){
   try{
     const[s,eq,dec,tr,logs,src,tape,strat,ins]=await Promise.all([
       j("/api/summary"),j("/api/equity"),j("/api/decisions?limit=22"),j("/api/trades?limit=18"),
-      j("/api/logs?limit=28"),j("/api/sources"),j("/api/watchlist"),j("/api/strategies"),j("/api/insiders?limit=12"),
+      j("/api/logs?limit=20"),j("/api/sources"),j("/api/watchlist"),j("/api/strategies"),j("/api/insiders?limit=12"),
     ]);
 
     if(prevArticles!==null&&s.articles>prevArticles)ecgSpike(1+Math.min((s.articles-prevArticles)/80,2));
@@ -577,7 +577,7 @@ async function refresh(){
   if(jobs.loop)renderLoop(jobs.loop);
   refresh();loadEvents();
 })();
-setInterval(()=>{refresh();loadEvents()},10_000);
+setInterval(()=>{refresh();loadEvents()},60_000);  // раз в минуту: каждый опрос — трафик через океан
 addEventListener("resize",drawEquity);
 </script>
 </body>

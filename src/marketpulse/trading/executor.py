@@ -303,6 +303,10 @@ def close_expired_trades() -> dict:
 def _reconcile_broker(s, client) -> list[str]:
     if client is None:
         return []
+    # защита: если в базе нет ни одной сделки (свежая база после миграции/сбоя),
+    # все позиции брокера выглядели бы «сиротами» — не закрываем ничего
+    if s.execute(select(func.count(Trade.id))).scalar() == 0:
+        return []
     try:
         positions = client.get_all_positions()
     except Exception:  # noqa: BLE001
