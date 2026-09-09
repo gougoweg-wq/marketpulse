@@ -304,10 +304,13 @@ def test_strong_model_signal_trims_manual_positions(monkeypatch):
     monkeypatch.setattr(settings, "max_gross_exposure", 0.60)  # лимит 60%: ручные $30k = половина, место под сильную сделку есть
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with db_session() as s:
-        # чистый стол: позиции из других тестов не должны занимать экспозицию
+        # чистый стол: позиции и незакрытые решения из других тестов не должны мешать
         for t in s.query(Trade).filter_by(status=TradeStatus.filled).all():
             t.status = TradeStatus.closed
             t.pnl = 0.0
+        for d in s.query(Decision).filter(Decision.outcome_recorded_at.is_(None)).all():
+            d.outcome_recorded_at = now
+            d.realized_return = 0.0
         _seed_bars(s, "MANL", now - timedelta(hours=2), [100.0, 101.0])
         _seed_bars(s, "STRG", now - timedelta(hours=2), [50.0, 50.0])
         # две ручные позиции занимают всю экспозицию: $20k + $10k
@@ -323,8 +326,9 @@ def test_strong_model_signal_trims_manual_positions(monkeypatch):
         s.add(Decision(symbol="STRG", direction=Direction.long, reason=DecisionReason.model,
                        confidence=0.75, features={k: 0.0 for k in FEATURE_ORDER},
                        horizon_hours=4, created_at=now, entry_price=50.0))
-    executor.execute_new_decisions()
+    r = executor.execute_new_decisions()
     with db_session() as s:
-        assert s.query(Trade).filter_by(symbol="STRG", status=TradeStatus.filled).count() == 1
+        eq = executor.account_equity(s)
+        assert s.query(Trade).filter_by(symbol="STRG", status=TradeStatus.filled).count() == 1, (r, eq)
         closed = s.query(Trade).filter_by(symbol="MANL", status=TradeStatus.closed).all()
         assert closed and closed[0].pnl is not None  # мелкая ручная закрыта с честным исходом
